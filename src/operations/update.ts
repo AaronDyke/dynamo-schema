@@ -9,6 +9,7 @@ import type { EntityDefinition } from "../types/entity.js";
 import type { SDKAdapter } from "../adapters/adapter.js";
 import type { DynamoError } from "../types/operations.js";
 import type { UpdateActions, UpdateBuilder } from "../types/update-expression.js";
+import type { FilterInput } from "../types/filter-expression.js";
 import { type Result, ok, err } from "../types/common.js";
 import { createDynamoError } from "../types/operations.js";
 import { parseTemplate } from "../keys/template-parser.js";
@@ -19,10 +20,16 @@ import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
 import { aliasAttributeName } from "../utils/expression-names.js";
 import { valuePlaceholder } from "../utils/expression-values.js";
+import { resolveFilterInput } from "./filter.js";
 
 /** Options for Update operations. */
 export interface UpdateOptions {
-  readonly condition?: string | undefined;
+  /**
+   * Condition expression that must be satisfied for the update to succeed.
+   * Accepts a raw DynamoDB expression string, a `FilterNode` built with
+   * `createFilterBuilder`, or an inline callback `(f) => f.attributeExists('pk')`.
+   */
+  readonly condition?: FilterInput | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   /**
@@ -283,14 +290,19 @@ export const executeUpdate = async <
 
   const compiled = compileUpdateActions(actionsWithTtl);
 
-  // 3. Merge user-provided expression names/values
+  // 3. Resolve condition expression (string, FilterNode, or callback)
+  const resolvedCondition = resolveFilterInput(options?.condition);
+
+  // 4. Merge expression names/values from update expression, condition, and user overrides
   const mergedNames: Record<string, string> = {
     ...compiled.expressionAttributeNames,
+    ...resolvedCondition.expressionAttributeNames,
     ...options?.expressionNames,
   };
 
   const mergedValues: Record<string, unknown> = {
     ...compiled.expressionAttributeValues,
+    ...resolvedCondition.expressionAttributeValues,
     ...options?.expressionValues,
   };
 
@@ -327,7 +339,7 @@ export const executeUpdate = async <
       tableName: entity.table.tableName,
       key: marshalledKey,
       updateExpression: compiled.updateExpression,
-      conditionExpression: options?.condition,
+      conditionExpression: resolvedCondition.expression,
       expressionAttributeNames:
         Object.keys(mergedNames).length > 0 ? mergedNames : undefined,
       expressionAttributeValues:

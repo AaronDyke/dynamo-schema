@@ -15,6 +15,7 @@ import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import { aliasAttributeName } from "../utils/expression-names.js";
 import { valuePlaceholder } from "../utils/expression-values.js";
+import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
 
 /** Key condition for the partition key. */
@@ -149,19 +150,24 @@ export const executeQuery = async <
     projectionExpression = projParts.join(", ");
   }
 
-  // 4. Merge all expression attribute names and values
+  // 4. Resolve filter expression (string, FilterNode, or callback)
+  const resolvedFilter = resolveFilterInput(options?.filter);
+
+  // 5. Merge all expression attribute names and values
   const mergedNames: Record<string, string> = {
     ...keyCondition.names,
     ...projNames,
+    ...resolvedFilter.expressionAttributeNames,
     ...options?.expressionNames,
   };
 
   const mergedValues: Record<string, unknown> = {
     ...keyCondition.values,
+    ...resolvedFilter.expressionAttributeValues,
     ...options?.expressionValues,
   };
 
-  // 5. Marshall values if using raw adapter
+  // 6. Marshall values if using raw adapter
   let marshalledValues: Record<string, unknown> = mergedValues;
   let startKey = options?.startKey;
 
@@ -189,14 +195,14 @@ export const executeQuery = async <
     }
   }
 
-  // 6. Call adapter
+  // 7. Call adapter
   let result;
   try {
     result = await adapter.query({
       tableName: entity.table.tableName,
       indexName: options?.indexName,
       keyConditionExpression: keyCondition.expression,
-      filterExpression: options?.filter,
+      filterExpression: resolvedFilter.expression,
       expressionAttributeNames:
         Object.keys(mergedNames).length > 0 ? mergedNames : undefined,
       expressionAttributeValues:
@@ -217,7 +223,7 @@ export const executeQuery = async <
     );
   }
 
-  // 7. Unmarshall items if using raw adapter
+  // 8. Unmarshall items if using raw adapter
   const items: Array<StandardSchemaV1.InferOutput<S>> = [];
   for (const rawItem of result.items) {
     if (adapter.isRaw) {

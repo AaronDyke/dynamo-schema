@@ -13,6 +13,7 @@ import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
+import { resolveFilterInput } from "./filter.js";
 
 /**
  * Executes a Put operation for the given entity.
@@ -137,9 +138,15 @@ export const executePut = async <
     }
   }
 
-  // 6. Marshall if using raw adapter
+  // 6. Resolve condition expression (string, FilterNode, or callback)
+  const resolvedCondition = resolveFilterInput(options?.condition);
+
+  // 7. Marshall if using raw adapter
   let item: Record<string, unknown> = itemData;
-  let exprValues = options?.expressionValues;
+  let exprValues: Record<string, unknown> = {
+    ...resolvedCondition.expressionAttributeValues,
+    ...options?.expressionValues,
+  };
 
   if (adapter.isRaw) {
     const marshalled = marshallItem(itemData);
@@ -154,7 +161,7 @@ export const executePut = async <
     }
     item = marshalled.data;
 
-    if (exprValues) {
+    if (Object.keys(exprValues).length > 0) {
       const marshalledValues: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(exprValues)) {
         const mv = marshallValue(v);
@@ -169,14 +176,22 @@ export const executePut = async <
     }
   }
 
-  // 7. Call adapter
+  // 8. Merge condition expression attribute names
+  const mergedNames: Record<string, string> = {
+    ...resolvedCondition.expressionAttributeNames,
+    ...options?.expressionNames,
+  };
+
+  // 9. Call adapter
   try {
     await adapter.putItem({
       tableName: entity.table.tableName,
       item,
-      conditionExpression: options?.condition,
-      expressionAttributeNames: options?.expressionNames,
-      expressionAttributeValues: exprValues,
+      conditionExpression: resolvedCondition.expression,
+      expressionAttributeNames:
+        Object.keys(mergedNames).length > 0 ? mergedNames : undefined,
+      expressionAttributeValues:
+        Object.keys(exprValues).length > 0 ? exprValues : undefined,
     });
     return ok(itemData as StandardSchemaV1.InferOutput<S>);
   } catch (cause) {

@@ -71,6 +71,19 @@ export type { StandardSchemaV1 } from "./standard-schema/types.js";
 // Update builder factory
 export { createUpdateBuilder } from "./operations/update.js";
 
+// Filter / condition expression builder
+export { createFilterBuilder, compileFilterNode } from "./operations/filter.js";
+export type {
+  FilterNode,
+  FilterLeafNode,
+  FilterCompositeNode,
+  FilterBuilder,
+  FilterBuilderFn,
+  FilterInput,
+  CompiledFilter,
+  DynamoAttributeType,
+} from "./types/filter-expression.js";
+
 // Marshalling (for users who need raw AttributeValue handling)
 export { marshallItem, marshallValue } from "./marshalling/marshall.js";
 export { unmarshallItem, unmarshallValue } from "./marshalling/unmarshall.js";

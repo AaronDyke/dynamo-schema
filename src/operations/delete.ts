@@ -12,6 +12,7 @@ import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
+import { resolveFilterInput } from "./filter.js";
 
 /**
  * Executes a Delete operation for the given entity.
@@ -69,9 +70,15 @@ export const executeDelete = async <
     }
   }
 
-  // 2. Marshall key if using raw adapter
+  // 2. Resolve condition expression (string, FilterNode, or callback)
+  const resolvedCondition = resolveFilterInput(options?.condition);
+
+  // 3. Marshall key if using raw adapter
   let marshalledKey: Record<string, unknown> = key;
-  let exprValues = options?.expressionValues;
+  let exprValues: Record<string, unknown> = {
+    ...resolvedCondition.expressionAttributeValues,
+    ...options?.expressionValues,
+  };
 
   if (adapter.isRaw) {
     const m = marshallItem(key);
@@ -82,7 +89,7 @@ export const executeDelete = async <
     }
     marshalledKey = m.data;
 
-    if (exprValues) {
+    if (Object.keys(exprValues).length > 0) {
       const marshalledValues: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(exprValues)) {
         const mv = marshallValue(v);
@@ -97,14 +104,22 @@ export const executeDelete = async <
     }
   }
 
-  // 3. Call adapter
+  // 4. Merge condition expression attribute names
+  const mergedNames: Record<string, string> = {
+    ...resolvedCondition.expressionAttributeNames,
+    ...options?.expressionNames,
+  };
+
+  // 5. Call adapter
   try {
     await adapter.deleteItem({
       tableName: entity.table.tableName,
       key: marshalledKey,
-      conditionExpression: options?.condition,
-      expressionAttributeNames: options?.expressionNames,
-      expressionAttributeValues: exprValues,
+      conditionExpression: resolvedCondition.expression,
+      expressionAttributeNames:
+        Object.keys(mergedNames).length > 0 ? mergedNames : undefined,
+      expressionAttributeValues:
+        Object.keys(exprValues).length > 0 ? exprValues : undefined,
     });
     return ok(undefined);
   } catch (cause) {

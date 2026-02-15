@@ -12,6 +12,7 @@ import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import { aliasAttributeName } from "../utils/expression-names.js";
+import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
 
 /**
@@ -42,18 +43,25 @@ export const executeScan = async <
     projectionExpression = projParts.join(", ");
   }
 
-  // 2. Merge expression attribute names
+  // 2. Resolve filter expression (string, FilterNode, or callback)
+  const resolvedFilter = resolveFilterInput(options?.filter);
+
+  // 3. Merge expression attribute names
   const mergedNames: Record<string, string> = {
     ...projNames,
+    ...resolvedFilter.expressionAttributeNames,
     ...options?.expressionNames,
   };
 
-  // 3. Marshall expression values if using raw adapter
-  let exprValues = options?.expressionValues;
+  // 4. Marshall expression values if using raw adapter
+  let exprValues: Record<string, unknown> = {
+    ...resolvedFilter.expressionAttributeValues,
+    ...options?.expressionValues,
+  };
   let startKey = options?.startKey;
 
   if (adapter.isRaw) {
-    if (exprValues) {
+    if (Object.keys(exprValues).length > 0) {
       const mv: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(exprValues)) {
         const marshalled = marshallValue(v);
@@ -78,16 +86,17 @@ export const executeScan = async <
     }
   }
 
-  // 4. Call adapter
+  // 5. Call adapter
   let result;
   try {
     result = await adapter.scan({
       tableName: entity.table.tableName,
       indexName: options?.indexName,
-      filterExpression: options?.filter,
+      filterExpression: resolvedFilter.expression,
       expressionAttributeNames:
         Object.keys(mergedNames).length > 0 ? mergedNames : undefined,
-      expressionAttributeValues: exprValues,
+      expressionAttributeValues:
+        Object.keys(exprValues).length > 0 ? exprValues : undefined,
       limit: options?.limit,
       exclusiveStartKey: startKey,
       consistentRead: options?.consistentRead,
@@ -103,7 +112,7 @@ export const executeScan = async <
     );
   }
 
-  // 5. Unmarshall items if using raw adapter
+  // 6. Unmarshall items if using raw adapter
   const items: Array<StandardSchemaV1.InferOutput<S>> = [];
   for (const rawItem of result.items) {
     if (adapter.isRaw) {

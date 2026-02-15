@@ -3,6 +3,7 @@
  */
 
 import type { AttributeMap } from "../marshalling/types.js";
+import type { FilterInput } from "./filter-expression.js";
 
 /** Error type for DynamoDB operations. */
 export interface DynamoError {
@@ -21,7 +22,12 @@ export const createDynamoError = (
 
 /** Options for Put operations. */
 export interface PutOptions {
-  readonly condition?: string | undefined;
+  /**
+   * Condition expression that must be satisfied for the put to succeed.
+   * Accepts a raw DynamoDB expression string, a `FilterNode` built with
+   * `createFilterBuilder`, or an inline callback `(f) => f.attributeNotExists('pk')`.
+   */
+  readonly condition?: FilterInput | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   readonly skipValidation?: boolean | undefined;
@@ -39,7 +45,12 @@ export interface GetOptions {
 
 /** Options for Delete operations. */
 export interface DeleteOptions {
-  readonly condition?: string | undefined;
+  /**
+   * Condition expression that must be satisfied for the delete to succeed.
+   * Accepts a raw DynamoDB expression string, a `FilterNode` built with
+   * `createFilterBuilder`, or an inline callback `(f) => f.attributeExists('pk')`.
+   */
+  readonly condition?: FilterInput | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   /** When `true`, all entity hooks are bypassed for this call. Default: `false`. */
@@ -49,7 +60,25 @@ export interface DeleteOptions {
 /** Options for Query operations. */
 export interface QueryOptions {
   readonly indexName?: string | undefined;
-  readonly filter?: string | undefined;
+  /**
+   * Filter expression applied after the key condition.
+   * Accepts a raw DynamoDB expression string, a `FilterNode` built with
+   * `createFilterBuilder`, or an inline callback `(f) => f.and(...)`.
+   *
+   * When using a `FilterNode` or callback, `expressionNames` and
+   * `expressionValues` are populated automatically.
+   *
+   * @example
+   * ```ts
+   * // Inline callback (untyped builder — any string key accepted)
+   * filter: (f) => f.and(f.eq('status', 'active'), f.gt('age', 18))
+   *
+   * // Pre-built node (type-safe builder)
+   * const f = createFilterBuilder<User>();
+   * filter: f.and(f.eq('status', 'active'), f.gt('age', 18))
+   * ```
+   */
+  readonly filter?: FilterInput | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   readonly limit?: number | undefined;
@@ -69,7 +98,15 @@ export interface QueryResult<T> {
 /** Options for Scan operations. */
 export interface ScanOptions {
   readonly indexName?: string | undefined;
-  readonly filter?: string | undefined;
+  /**
+   * Filter expression applied to scanned items.
+   * Accepts a raw DynamoDB expression string, a `FilterNode` built with
+   * `createFilterBuilder`, or an inline callback `(f) => f.and(...)`.
+   *
+   * When using a `FilterNode` or callback, `expressionNames` and
+   * `expressionValues` are populated automatically.
+   */
+  readonly filter?: FilterInput | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   readonly limit?: number | undefined;
