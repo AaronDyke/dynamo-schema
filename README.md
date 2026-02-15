@@ -467,7 +467,7 @@ await users.query({
   sortKeyCondition: { beginsWith: "ORDER#" },
   options: {
     indexName: "GSI1",                        // query a secondary index
-    filter: "#status = :active",              // filter expression
+    filter: "#status = :active",              // raw filter expression (legacy)
     expressionNames: { "#status": "status" },
     expressionValues: { ":active": "active" },
     limit: 10,                                // max items per page
@@ -503,6 +503,137 @@ await users.scan({
   expressionValues: { ":minAge": 21 },
   limit: 100,
   indexName: "GSI1",
+});
+```
+
+---
+
+## Filter / Condition Expression Builder
+
+The `createFilterBuilder<T>()` function provides a type-safe, composable API for building DynamoDB filter expressions (in query/scan) and condition expressions (in put/delete/update).
+
+It automatically handles reserved word aliasing, `:value` placeholder injection, and `AND`/`OR`/`NOT` composition — making it impossible to write a malformed expression.
+
+### Basic usage
+
+```typescript
+import { createFilterBuilder, compileFilterNode } from "dynamo-schema";
+
+type User = { userId: string; status: string; age: number; email: string; verifiedAt?: string };
+
+const f = createFilterBuilder<User>();
+
+// Build a filter node (immutable, composable)
+const filter = f.and(
+  f.eq("status", "active"),
+  f.gt("age", 18),
+  f.beginsWith("email", "admin@"),
+  f.attributeExists("verifiedAt"),
+);
+
+// Pass directly to query/scan options
+const result = await users.query({
+  partitionKey: { userId: "123" },
+  options: { filter },
+});
+```
+
+### Inline callback syntax
+
+The `filter` and `condition` options also accept an inline callback. The callback receives an untyped builder (any string key is accepted):
+
+```typescript
+await users.query({
+  partitionKey: { userId: "123" },
+  options: {
+    filter: (f) => f.and(
+      f.eq("status", "active"),
+      f.gt("age", 18),
+    ),
+  },
+});
+```
+
+### Available operators
+
+| Method | DynamoDB | Notes |
+|--------|----------|-------|
+| `f.eq(attr, value)` | `attr = :v` | |
+| `f.ne(attr, value)` | `attr <> :v` | |
+| `f.lt(attr, value)` | `attr < :v` | |
+| `f.lte(attr, value)` | `attr <= :v` | |
+| `f.gt(attr, value)` | `attr > :v` | |
+| `f.gte(attr, value)` | `attr >= :v` | |
+| `f.between(attr, lo, hi)` | `attr BETWEEN :lo AND :hi` | |
+| `f.beginsWith(attr, prefix)` | `begins_with(attr, :v)` | |
+| `f.contains(attr, value)` | `contains(attr, :v)` | |
+| `f.attributeExists(attr)` | `attribute_exists(attr)` | No value |
+| `f.attributeNotExists(attr)` | `attribute_not_exists(attr)` | No value |
+| `f.attributeType(attr, type)` | `attribute_type(attr, :v)` | type: `S`, `N`, `B`, etc. |
+| `f.and(...conds)` | `(c1 AND c2 ...)` | |
+| `f.or(...conds)` | `(c1 OR c2 ...)` | |
+| `f.not(cond)` | `NOT (cond)` | |
+
+### Condition expressions in put / delete / update
+
+The same `FilterInput` type is accepted for `condition` in put, delete, and update:
+
+```typescript
+// Put: only if item does not exist
+await users.put(newUser, {
+  condition: (f) => f.attributeNotExists("userId"),
+});
+
+// Delete: only if version matches
+await users.delete({ userId: "123" }, {
+  condition: (f) => f.eq("version", 5),
+});
+
+// Update: only if status is still "active"
+await users.update(
+  { userId: "123" },
+  (b) => b.set("name", "Alice"),
+  { condition: (f) => f.eq("status", "active") },
+);
+```
+
+### Manual compilation
+
+If you need access to the compiled expression parts directly (e.g., for custom logic):
+
+```typescript
+import { createFilterBuilder, compileFilterNode } from "dynamo-schema";
+
+const f = createFilterBuilder<User>();
+const compiled = compileFilterNode(
+  f.and(f.eq("status", "active"), f.gt("age", 18)),
+);
+
+console.log(compiled.expression);
+// → "(#f0 = :f0 AND #f1 > :f1)"
+
+console.log(compiled.expressionAttributeNames);
+// → { "#f0": "status", "#f1": "age" }
+
+console.log(compiled.expressionAttributeValues);
+// → { ":f0": "active", ":f1": 18 }
+```
+
+### Backward compatibility
+
+Raw expression strings still work everywhere — the builder is fully additive:
+
+```typescript
+// Legacy raw string (still works)
+await users.scan({
+  filter: "#status = :s",
+  expressionNames: { "#status": "status" },
+  expressionValues: { ":s": "active" },
+});
+
+// New builder-based filter (recommended)
+await users.scan({
+  filter: (f) => f.eq("status", "active"),
 });
 ```
 
