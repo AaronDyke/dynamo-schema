@@ -61,6 +61,8 @@ export { type Result, ok, err, mapResult, flatMapResult } from "./types/common.j
 // Validation
 export { validate } from "./validation/validate.js";
 export type { ValidationError, ValidationIssue } from "./validation/errors.js";
+export { validateTable } from "./validation/validate-table.js";
+export type { TableValidationResult, TableValidationIssue, TableValidationSeverity } from "./validation/validate-table.js";
 
 // Standard Schema types (re-exported for convenience)
 export type { StandardSchemaV1 } from "./standard-schema/types.js";
@@ -73,5 +75,8 @@ export { marshallItem, marshallValue } from "./marshalling/marshall.js";
 export { unmarshallItem, unmarshallValue } from "./marshalling/unmarshall.js";
 export type { AttributeValue, AttributeMap } from "./marshalling/types.js";
 
+// DescribeTable types
+export type { DescribeTableOutput, DescribeKeySchema, DescribeAttributeDefinition, DescribeIndexInfo } from "./types/describe-table.js";
+
 // SDK Adapter type (for creating custom adapters)
-export type { SDKAdapter } from "./adapters/adapter.js";
+export type { SDKAdapter, DescribeTableInput } from "./adapters/adapter.js";

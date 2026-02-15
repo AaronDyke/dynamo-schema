@@ -7,6 +7,7 @@
 
 import type { SDKAdapter } from "./adapter.js";
 import type { AttributeMap, AttributeValue } from "../marshalling/types.js";
+import { normalizeDescribeTableOutput } from "./normalize-describe-table.js";
 
 /** Minimal interface for the AWS SDK v3 DynamoDBClient. */
 interface DynamoDBClientV3 {
@@ -48,6 +49,7 @@ export const createSDKv3Adapter = (
     readonly BatchGetItemCommand: CommandConstructor;
     readonly TransactWriteItemsCommand: CommandConstructor;
     readonly TransactGetItemsCommand: CommandConstructor;
+    readonly DescribeTableCommand: CommandConstructor;
   },
 ): SDKAdapter =>
   Object.freeze({
@@ -349,5 +351,13 @@ export const createSDKv3Adapter = (
       return {
         items: (result.Responses ?? []).map((r) => r.Item),
       };
+    },
+    describeTable: async (input) => {
+      const result = await client.send(
+        new commands.DescribeTableCommand({
+          TableName: input.tableName,
+        }),
+      );
+      return normalizeDescribeTableOutput(result);
     },
   } satisfies SDKAdapter);

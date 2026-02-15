@@ -777,6 +777,137 @@ const client = createClient({ adapter, validation: false });
 await users.put(data, { skipValidation: true });
 ```
 
+### Table Validation
+
+`validateTable()` compares your local `defineTable()` definition against the actual DynamoDB table in AWS. It calls `DescribeTable` through the SDK adapter and reports mismatches in key names, key types, indexes, and table status.
+
+This is useful for catching drift between your code and your deployed table — for example during CI, deployment scripts, or application startup.
+
+**Basic usage:**
+
+```typescript
+import { defineTable, validateTable } from "dynamo-schema";
+import { createSDKv3DocAdapter } from "dynamo-schema/adapters/sdk-v3-doc";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBDocumentClient,
+  PutCommand, GetCommand, DeleteCommand, UpdateCommand,
+  QueryCommand, ScanCommand, BatchWriteCommand, BatchGetCommand,
+  TransactWriteCommand, TransactGetCommand,
+} from "@aws-sdk/lib-dynamodb";
+
+// 1. Define your table locally
+const table = defineTable({
+  tableName: "MainTable",
+  partitionKey: { name: "pk", definition: "pk" },
+  sortKey: { name: "sk", definition: "sk" },
+  indexes: {
+    gsi1: {
+      type: "GSI",
+      indexName: "GSI1",
+      partitionKey: { name: "gsi1pk", definition: "gsi1pk" },
+      sortKey: { name: "gsi1sk", definition: "gsi1sk" },
+    },
+  },
+});
+
+// 2. Create the adapter
+const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+const adapter = createSDKv3DocAdapter(ddbClient, {
+  PutCommand, GetCommand, DeleteCommand, UpdateCommand,
+  QueryCommand, ScanCommand, BatchWriteCommand, BatchGetCommand,
+  TransactWriteCommand, TransactGetCommand,
+});
+
+// 3. Validate the table
+const result = await validateTable(table, adapter);
+```
+
+**Handling the result:**
+
+`validateTable` returns `Result<TableValidationResult, DynamoError>`. The `TableValidationResult` contains a `valid` boolean and an array of `issues`, each with a severity level.
+
+```typescript
+if (!result.success) {
+  // The DescribeTable API call itself failed (e.g. table not found, permissions)
+  console.error("Failed to describe table:", result.error.message);
+} else if (!result.data.valid) {
+  // The table exists but doesn't match the local definition
+  console.log(`Table "${result.data.tableName}" has validation errors:`);
+
+  for (const issue of result.data.issues) {
+    // issue.severity: "error" | "warning" | "info"
+    // issue.path:     location of the mismatch (e.g. "partitionKey", "indexes.gsi1.sortKey")
+    // issue.message:  human-readable description
+    // issue.expected: what the local definition expects (optional)
+    // issue.actual:   what AWS returned (optional)
+    console.log(`  [${issue.severity}] ${issue.path}: ${issue.message}`);
+    if (issue.expected) console.log(`    expected: ${issue.expected}`);
+    if (issue.actual)   console.log(`    actual:   ${issue.actual}`);
+  }
+} else {
+  console.log(`Table "${result.data.tableName}" matches the local definition.`);
+}
+```
+
+**What gets validated:**
+
+| Check | Severity | Description |
+|-------|----------|-------------|
+| Table status | `warning` | Reports if the table status is not `"ACTIVE"` |
+| Partition key name | `error` | Local `partitionKey.name` must match the AWS HASH key |
+| Partition key type | `error` | If `partitionKey.type` is set locally, it must match AWS |
+| Sort key presence | `error` | Both sides must agree on whether a sort key exists |
+| Sort key name | `error` | Local `sortKey.name` must match the AWS RANGE key |
+| Sort key type | `error` | If `sortKey.type` is set locally, it must match AWS |
+| Index existence | `error` | Every locally defined index must exist in AWS |
+| Index type | `error` | A local GSI must be a GSI in AWS (not an LSI), and vice versa |
+| Index key names/types | `error` | Index partition and sort key names and types must match |
+| GSI status | `warning` | Reports if a GSI status is not `"ACTIVE"` |
+| Extra AWS indexes | `info` | Indexes in AWS that are not defined locally are reported |
+
+**Using in CI or startup checks:**
+
+```typescript
+// Fail fast if the table schema has drifted
+const assertTableValid = async (table: TableDefinition, adapter: SDKAdapter) => {
+  const result = await validateTable(table, adapter);
+
+  if (!result.success) {
+    throw new Error(`Cannot validate table: ${result.error.message}`);
+  }
+
+  const errors = result.data.issues.filter((i) => i.severity === "error");
+  if (errors.length > 0) {
+    const summary = errors
+      .map((e) => `  ${e.path}: ${e.message}`)
+      .join("\n");
+    throw new Error(
+      `Table "${result.data.tableName}" schema mismatch:\n${summary}`,
+    );
+  }
+};
+```
+
+**`TableValidationResult` type reference:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `tableName` | `string` | The table name that was validated |
+| `tableStatus` | `string` | The AWS table status (e.g. `"ACTIVE"`) |
+| `valid` | `boolean` | `true` if no `"error"` severity issues were found |
+| `issues` | `readonly TableValidationIssue[]` | All issues found during validation |
+
+**`TableValidationIssue` type reference:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `severity` | `"error" \| "warning" \| "info"` | How critical the issue is |
+| `path` | `string` | Dot-separated path to the mismatched property |
+| `message` | `string` | Human-readable description of the issue |
+| `expected` | `string \| undefined` | What the local definition expects |
+| `actual` | `string \| undefined` | What AWS returned |
+
 ### Using with different schema libraries
 
 The library works with any [Standard Schema V1](https://standardschema.dev) compliant validation library.
@@ -872,6 +1003,7 @@ if (item.success) {
 | `defineEntity(config)` | Creates an immutable entity definition with compile-time key validation |
 | `createClient(config)` | Creates a DynamoDB client from an SDK adapter |
 | `createUpdateBuilder<T>()` | Creates a standalone update expression builder |
+| `validateTable(table, adapter)` | Validates a local table definition against the actual AWS table |
 
 ### DynamoClient Methods
 

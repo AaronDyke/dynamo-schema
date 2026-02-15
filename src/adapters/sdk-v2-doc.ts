@@ -6,6 +6,7 @@
  */
 
 import type { SDKAdapter } from "./adapter.js";
+import { normalizeDescribeTableOutput } from "./normalize-describe-table.js";
 
 /** Minimal interface for the AWS SDK v2 DocumentClient. */
 interface DocumentClientV2 {
@@ -19,6 +20,9 @@ interface DocumentClientV2 {
   batchGet(params: unknown): { promise(): Promise<unknown> };
   transactWrite(params: unknown): { promise(): Promise<unknown> };
   transactGet(params: unknown): { promise(): Promise<unknown> };
+  service: {
+    describeTable(params: unknown): { promise(): Promise<unknown> };
+  };
 }
 
 /**
@@ -318,5 +322,11 @@ export const createSDKv2DocAdapter = (
       return {
         items: (result.Responses ?? []).map((r) => r.Item),
       };
+    },
+    describeTable: async (input) => {
+      const result = await client.service
+        .describeTable({ TableName: input.tableName })
+        .promise();
+      return normalizeDescribeTableOutput(result);
     },
   } satisfies SDKAdapter);

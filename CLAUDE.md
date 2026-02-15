@@ -77,6 +77,8 @@ src/
 - Include `@param`, `@returns`, and `@throws` (if applicable)
 - Add `@example` for complex functions
 - Document edge cases and assumptions
+- Every time a code change is done, update the README.md with examples
+- Make sure all documentation is readable and clear for both humans and AI
 
 ### Testing
 - Write tests for all public APIs

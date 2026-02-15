@@ -7,6 +7,7 @@
 
 import type { SDKAdapter } from "./adapter.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { normalizeDescribeTableOutput } from "./normalize-describe-table.js";
 
 /** Minimal interface for the AWS SDK v2 DynamoDB service. */
 interface DynamoDBV2 {
@@ -20,6 +21,7 @@ interface DynamoDBV2 {
   batchGetItem(params: unknown): { promise(): Promise<unknown> };
   transactWriteItems(params: unknown): { promise(): Promise<unknown> };
   transactGetItems(params: unknown): { promise(): Promise<unknown> };
+  describeTable(params: unknown): { promise(): Promise<unknown> };
 }
 
 /**
@@ -317,5 +319,11 @@ export const createSDKv2Adapter = (client: DynamoDBV2): SDKAdapter =>
       return {
         items: (result.Responses ?? []).map((r) => r.Item),
       };
+    },
+    describeTable: async (input) => {
+      const result = await client
+        .describeTable({ TableName: input.tableName })
+        .promise();
+      return normalizeDescribeTableOutput(result);
     },
   } satisfies SDKAdapter);

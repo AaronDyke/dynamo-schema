@@ -6,6 +6,7 @@
  */
 
 import type { AttributeMap } from "../marshalling/types.js";
+import type { DescribeTableOutput } from "../types/describe-table.js";
 
 /** Common options for all DynamoDB operations. */
 export interface BaseOperationInput {
@@ -258,6 +259,11 @@ export interface TransactGetOutput {
   >;
 }
 
+/** Input for DescribeTable. */
+export interface DescribeTableInput {
+  readonly tableName: string;
+}
+
 /**
  * The adapter interface that all SDK adapters must implement.
  *
@@ -290,4 +296,7 @@ export interface SDKAdapter {
   readonly transactGetItems: (
     items: ReadonlyArray<TransactGetItem>,
   ) => Promise<TransactGetOutput>;
+  readonly describeTable: (
+    input: DescribeTableInput,
+  ) => Promise<DescribeTableOutput>;
 }

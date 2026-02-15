@@ -6,6 +6,7 @@
  */
 
 import type { SDKAdapter } from "./adapter.js";
+import { normalizeDescribeTableOutput } from "./normalize-describe-table.js";
 
 /** Minimal interface for the AWS SDK v3 DynamoDBDocumentClient. */
 interface DynamoDBDocumentClientV3 {
@@ -37,6 +38,7 @@ export const createSDKv3DocAdapter = (
     readonly BatchGetCommand: CommandConstructor;
     readonly TransactWriteCommand: CommandConstructor;
     readonly TransactGetCommand: CommandConstructor;
+    readonly DescribeTableCommand: CommandConstructor;
   },
 ): SDKAdapter =>
   Object.freeze({
@@ -335,5 +337,13 @@ export const createSDKv3DocAdapter = (
       return {
         items: (result.Responses ?? []).map((r) => r.Item),
       };
+    },
+    describeTable: async (input) => {
+      const result = await client.send(
+        new commands.DescribeTableCommand({
+          TableName: input.tableName,
+        }),
+      );
+      return normalizeDescribeTableOutput(result);
     },
   } satisfies SDKAdapter);
