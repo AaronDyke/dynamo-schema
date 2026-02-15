@@ -15,6 +15,8 @@ import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
+import { unmarshallItem } from "../marshalling/unmarshall.js";
+import type { AttributeMap } from "../marshalling/types.js";
 import { aliasAttributeName } from "../utils/expression-names.js";
 import { valuePlaceholder } from "../utils/expression-values.js";
 
@@ -23,7 +25,6 @@ export interface UpdateOptions {
   readonly condition?: string | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
-  readonly returnValues?: string | undefined;
 }
 
 /**
@@ -170,7 +171,7 @@ export const executeUpdate = async <
     builder: UpdateBuilder<StandardSchemaV1.InferOutput<S>>,
   ) => UpdateBuilder<StandardSchemaV1.InferOutput<S>>,
   options?: UpdateOptions,
-): Promise<Result<void, DynamoError>> => {
+): Promise<Result<StandardSchemaV1.InferOutput<S>, DynamoError>> => {
   // 1. Build key
   const pkTemplate = parseTemplate(entity.partitionKey);
   const pkResult = buildKeyValue(pkTemplate, keyInput);
@@ -249,8 +250,9 @@ export const executeUpdate = async <
   }
 
   // 5. Call adapter
+  let updateResult;
   try {
-    await adapter.updateItem({
+    updateResult = await adapter.updateItem({
       tableName: entity.table.tableName,
       key: marshalledKey,
       updateExpression: compiled.updateExpression,
@@ -261,9 +263,8 @@ export const executeUpdate = async <
         Object.keys(marshalledValues).length > 0
           ? marshalledValues
           : undefined,
-      returnValues: options?.returnValues,
+      returnValues: "ALL_NEW",
     });
-    return ok(undefined);
   } catch (cause) {
     return err(
       createDynamoError(
@@ -273,4 +274,33 @@ export const executeUpdate = async <
       ),
     );
   }
+
+  // 6. Return the new entity state from the response
+  if (!updateResult.attributes) {
+    return err(
+      createDynamoError(
+        "dynamo",
+        "Update succeeded but no attributes were returned",
+      ),
+    );
+  }
+
+  let itemData: Record<string, unknown>;
+  if (adapter.isRaw) {
+    const unmarshalled = unmarshallItem(updateResult.attributes as AttributeMap);
+    if (!unmarshalled.success) {
+      return err(
+        createDynamoError(
+          "marshalling",
+          unmarshalled.error.message,
+          unmarshalled.error,
+        ),
+      );
+    }
+    itemData = unmarshalled.data;
+  } else {
+    itemData = updateResult.attributes as Record<string, unknown>;
+  }
+
+  return ok(itemData as StandardSchemaV1.InferOutput<S>);
 };

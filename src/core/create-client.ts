@@ -46,7 +46,7 @@ export interface EntityClient<E extends EntityDefinition> {
   readonly put: (
     data: InferEntityType<E>,
     options?: PutOptions,
-  ) => Promise<Result<void, DynamoError>>;
+  ) => Promise<Result<InferEntityType<E>, DynamoError>>;
 
   /** Gets an item by key. */
   readonly get: (
@@ -77,7 +77,7 @@ export interface EntityClient<E extends EntityDefinition> {
       builder: UpdateBuilder<InferEntityType<E>>,
     ) => UpdateBuilder<InferEntityType<E>>,
     options?: UpdateOptions,
-  ) => Promise<Result<void, DynamoError>>;
+  ) => Promise<Result<InferEntityType<E>, DynamoError>>;
 }
 
 /**
@@ -151,7 +151,7 @@ export const createClient = (config: ClientConfig): DynamoClient => {
           validation === false
             ? { ...options, skipValidation: true }
             : options,
-        ),
+        ) as Promise<Result<InferEntityType<E>, DynamoError>>,
 
       get: (key: EntityKeyInput<E>, options?: GetOptions) =>
         executeGet(
@@ -198,7 +198,7 @@ export const createClient = (config: ClientConfig): DynamoClient => {
             builder: UpdateBuilder<StandardSchemaV1.InferOutput<StandardSchemaV1>>,
           ) => UpdateBuilder<StandardSchemaV1.InferOutput<StandardSchemaV1>>,
           options,
-        ),
+        ) as Promise<Result<InferEntityType<E>, DynamoError>>,
     });
   };
 

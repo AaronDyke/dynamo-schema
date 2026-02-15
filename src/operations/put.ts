@@ -30,7 +30,7 @@ export const executePut = async <
   adapter: SDKAdapter,
   data: StandardSchemaV1.InferOutput<S>,
   options?: PutOptions,
-): Promise<Result<void, DynamoError>> => {
+): Promise<Result<StandardSchemaV1.InferOutput<S>, DynamoError>> => {
   // 1. Validate via schema (unless skipped)
   if (!options?.skipValidation) {
     const validationResult = await validate(entity.schema, data);
@@ -153,7 +153,7 @@ export const executePut = async <
       expressionAttributeNames: options?.expressionNames,
       expressionAttributeValues: exprValues,
     });
-    return ok(undefined);
+    return ok(itemData as StandardSchemaV1.InferOutput<S>);
   } catch (cause) {
     return err(
       createDynamoError(
