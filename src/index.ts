@@ -36,8 +36,8 @@ export { defineEntity } from "./core/define-entity.js";
 export { createClient } from "./core/create-client.js";
 
 // Core types
-export type { TableConfig, TableDefinition, IndexDefinition, IndexType, KeyAttribute, KeyAttributeType } from "./types/table.js";
-export type { EntityConfig, EntityDefinition, InferEntityType, EntityKeyInput, EntityKeyFields, EntityIndexKeys } from "./types/entity.js";
+export type { TableConfig, TableDefinition, IndexDefinition, IndexType, KeyAttribute, KeyAttributeType, TtlConfig } from "./types/table.js";
+export type { EntityConfig, EntityDefinition, InferEntityType, EntityKeyInput, EntityKeyFields, EntityIndexKeys, EntityTtlConfig } from "./types/entity.js";
 export type { KeyDefinition, KeySchema, ExtractTemplateFields, IsTemplate } from "./types/key.js";
 export type { ClientConfig, EntityClient, DynamoClient } from "./core/create-client.js";
 

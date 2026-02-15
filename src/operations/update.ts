@@ -25,6 +25,12 @@ export interface UpdateOptions {
   readonly condition?: string | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
+  /**
+   * When `true`, suppresses the automatic TTL refresh even if the entity has
+   * `autoUpdateTtlSeconds` configured. Useful for administrative updates where
+   * you do not want to extend the item's lifetime.
+   */
+  readonly skipAutoTtl?: boolean | undefined;
 }
 
 /**
@@ -222,19 +228,41 @@ export const executeUpdate = async <
   const configured = builderFn(builder);
   const actions = configured.build();
 
+  // Inject auto-TTL refresh if configured and not suppressed
+  let actionsWithTtl = actions;
+  const ttlAttributeName = entity.table.ttl?.attributeName;
+  const autoUpdateTtlSeconds = entity.ttl?.autoUpdateTtlSeconds;
   if (
-    actions.sets.length === 0 &&
-    actions.setIfNotExists.length === 0 &&
-    actions.removes.length === 0 &&
-    actions.adds.length === 0 &&
-    actions.deletes.length === 0
+    ttlAttributeName &&
+    autoUpdateTtlSeconds !== undefined &&
+    autoUpdateTtlSeconds > 0 &&
+    !options?.skipAutoTtl
+  ) {
+    actionsWithTtl = Object.freeze({
+      ...actions,
+      sets: [
+        ...actions.sets,
+        Object.freeze({
+          path: ttlAttributeName,
+          value: Math.floor(Date.now() / 1000) + autoUpdateTtlSeconds,
+        }),
+      ],
+    });
+  }
+
+  if (
+    actionsWithTtl.sets.length === 0 &&
+    actionsWithTtl.setIfNotExists.length === 0 &&
+    actionsWithTtl.removes.length === 0 &&
+    actionsWithTtl.adds.length === 0 &&
+    actionsWithTtl.deletes.length === 0
   ) {
     return err(
       createDynamoError("validation", "Update expression is empty; no actions specified"),
     );
   }
 
-  const compiled = compileUpdateActions(actions);
+  const compiled = compileUpdateActions(actionsWithTtl);
 
   // 3. Merge user-provided expression names/values
   const mergedNames: Record<string, string> = {

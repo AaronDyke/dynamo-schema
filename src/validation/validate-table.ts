@@ -303,7 +303,39 @@ export const validateTable = async (
     }
   }
 
-  // 5. Extra AWS indexes (info-level)
+  // 5. TTL attribute validation
+  if (table.ttl !== undefined) {
+    const ttlAttr = table.ttl.attributeName;
+
+    if (!ttlAttr || ttlAttr.trim() === "") {
+      issues.push({
+        severity: "error",
+        path: "ttl.attributeName",
+        message: "TTL attribute name must not be empty",
+      });
+    } else {
+      if (ttlAttr === table.partitionKey.name) {
+        issues.push({
+          severity: "error",
+          path: "ttl.attributeName",
+          message: `TTL attribute "${ttlAttr}" conflicts with the partition key name`,
+          expected: "A different attribute name",
+          actual: ttlAttr,
+        });
+      }
+      if (table.sortKey && ttlAttr === table.sortKey.name) {
+        issues.push({
+          severity: "error",
+          path: "ttl.attributeName",
+          message: `TTL attribute "${ttlAttr}" conflicts with the sort key name`,
+          expected: "A different attribute name",
+          actual: ttlAttr,
+        });
+      }
+    }
+  }
+
+  // 6. Extra AWS indexes (info-level)
   for (const awsGSI of allAwsGSIs) {
     if (!matchedAwsIndexNames.has(awsGSI.indexName)) {
       issues.push({

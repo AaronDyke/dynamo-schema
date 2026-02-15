@@ -26,6 +26,7 @@ import { executeDelete } from "../operations/delete.js";
 import { executeQuery, type EntityQueryInput, type SortKeyCondition } from "../operations/query.js";
 import { executeScan } from "../operations/scan.js";
 import { executeUpdate, type UpdateOptions } from "../operations/update.js";
+import { executeRemoveTtl } from "../operations/remove-ttl.js";
 import { executeBatchWrite, type BatchWriteRequestItem, type BatchWriteOptions } from "../operations/batch-write.js";
 import { executeBatchGet, type BatchGetEntityRequest, type BatchGetResult } from "../operations/batch-get.js";
 import { executeTransactWrite, type TransactWriteRequestItem, type TransactWriteOptions } from "../operations/transact-write.js";
@@ -78,6 +79,16 @@ export interface EntityClient<E extends EntityDefinition> {
     ) => UpdateBuilder<InferEntityType<E>>,
     options?: UpdateOptions,
   ) => Promise<Result<InferEntityType<E>, DynamoError>>;
+
+  /**
+   * Removes the TTL attribute from an existing item, preventing it from expiring.
+   *
+   * Requires the entity's table to have a `ttl` config with an `attributeName`.
+   * Returns a validation error if no TTL is configured on the table.
+   */
+  readonly removeTtl: (
+    key: EntityKeyInput<E>,
+  ) => Promise<Result<void, DynamoError>>;
 }
 
 /**
@@ -199,6 +210,13 @@ export const createClient = (config: ClientConfig): DynamoClient => {
           ) => UpdateBuilder<StandardSchemaV1.InferOutput<StandardSchemaV1>>,
           options,
         ) as Promise<Result<InferEntityType<E>, DynamoError>>,
+
+      removeTtl: (key: EntityKeyInput<E>) =>
+        executeRemoveTtl(
+          entity,
+          adapter,
+          key as Readonly<Record<string, string>>,
+        ),
     });
   };
 

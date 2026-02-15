@@ -45,4 +45,5 @@ export const defineTable = <
     indexes: Object.freeze(
       config.indexes ?? ({} as Indexes),
     ),
+    ttl: config.ttl ? Object.freeze({ ...config.ttl }) : undefined,
   });

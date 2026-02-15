@@ -72,7 +72,14 @@ export const executePut = async <
     itemData[entity.table.sortKey.name] = skValue;
   }
 
-  // 4. Build index key attributes
+  // 4. Inject default TTL if configured
+  const ttlAttributeName = entity.table.ttl?.attributeName;
+  const defaultTtlSeconds = entity.ttl?.defaultTtlSeconds;
+  if (ttlAttributeName && defaultTtlSeconds !== undefined && defaultTtlSeconds > 0) {
+    itemData[ttlAttributeName] = Math.floor(Date.now() / 1000) + defaultTtlSeconds;
+  }
+
+  // 5. Build index key attributes
   if (entity.indexes) {
     const indexes = entity.indexes as Record<
       string,
@@ -112,7 +119,7 @@ export const executePut = async <
     }
   }
 
-  // 5. Marshall if using raw adapter
+  // 6. Marshall if using raw adapter
   let item: Record<string, unknown> = itemData;
   let exprValues = options?.expressionValues;
 
@@ -144,7 +151,7 @@ export const executePut = async <
     }
   }
 
-  // 6. Call adapter
+  // 7. Call adapter
   try {
     await adapter.putItem({
       tableName: entity.table.tableName,

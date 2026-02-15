@@ -7,6 +7,40 @@ import type { TableDefinition, IndexDefinition } from "./table.js";
 import type { ResolveKeyFields } from "../keys/template-types.js";
 
 /**
+ * TTL behavior configuration for an entity.
+ *
+ * Controls automatic TTL injection on put and update operations.
+ * Requires the parent table to have a `ttl` config with an `attributeName`.
+ *
+ * @example
+ * ```ts
+ * const userEntity = defineEntity({
+ *   name: "User",
+ *   schema: userSchema,
+ *   table,
+ *   partitionKey: "USER#{{userId}}",
+ *   ttl: {
+ *     defaultTtlSeconds: 60 * 60 * 24 * 30, // 30 days
+ *     autoUpdateTtlSeconds: 60 * 60 * 24 * 30, // refresh to 30 days on every update
+ *   },
+ * });
+ * ```
+ */
+export interface EntityTtlConfig {
+  /**
+   * When set, a TTL value will be automatically injected on every `put` operation.
+   * The value is computed as `Math.floor(Date.now() / 1000) + defaultTtlSeconds`.
+   */
+  readonly defaultTtlSeconds?: number | undefined;
+  /**
+   * When set, the TTL attribute will be refreshed on every `update` operation
+   * (unless `skipAutoTtl: true` is passed in UpdateOptions).
+   * The value is computed as `Math.floor(Date.now() / 1000) + autoUpdateTtlSeconds`.
+   */
+  readonly autoUpdateTtlSeconds?: number | undefined;
+}
+
+/**
  * Index key overrides for an entity.
  * Each key in the record corresponds to an index name defined on the table.
  */
@@ -40,6 +74,8 @@ export interface EntityConfig<
   readonly indexes?: T extends TableDefinition<infer I>
     ? EntityIndexKeys<I>
     : undefined;
+  /** Optional TTL behavior for this entity. Requires the table to have a `ttl` config. */
+  readonly ttl?: EntityTtlConfig | undefined;
 }
 
 /**
@@ -59,6 +95,8 @@ export interface EntityDefinition<
   readonly indexes:
     | (T extends TableDefinition<infer I> ? EntityIndexKeys<I> : never)
     | undefined;
+  /** TTL behavior for this entity, if configured. */
+  readonly ttl: EntityTtlConfig | undefined;
 }
 
 /**

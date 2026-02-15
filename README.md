@@ -10,6 +10,7 @@ Type-safe DynamoDB schema validation and modeling for TypeScript. Works with any
 - **Template keys** -- use `"USER#{{userId}}"` patterns or simple field references for partition and sort keys
 - **All DynamoDB operations** -- Put, Get, Delete, Update, Query, Scan, BatchWrite, BatchGet, TransactWrite, TransactGet
 - **Type-safe update builder** -- chainable, immutable expression builder with autocomplete on attribute names
+- **TTL support** -- configure a TTL attribute on the table, auto-inject expiry on `put`, auto-refresh on `update`, and remove TTL from a specific item
 - **Runtime validation** -- validates inputs/outputs through Standard Schema at runtime (configurable)
 - **SDK flexible** -- supports AWS SDK v2 and v3, both raw DynamoDB client and DocumentClient
 - **Zero runtime dependencies** -- marshalling, validation wrappers, and Standard Schema types are all self-contained
@@ -185,6 +186,47 @@ const userEntity = defineEntity({
 | Static value | `"PROFILE"` | Uses the literal string as-is |
 | Simple field | `"userId"` | Uses the field value directly (no `{{}}` needed when the entire key is one field) |
 
+### TTL Configuration
+
+TTL is configured in two places: the **table** (which attribute DynamoDB uses for expiry) and the **entity** (how that attribute is managed automatically).
+
+#### Table-level TTL
+
+Tell DynamoDB which attribute holds the expiry timestamp. This attribute must be a `Number` type in DynamoDB and TTL must be enabled on the table in AWS.
+
+```typescript
+const table = defineTable({
+  tableName: "MainTable",
+  partitionKey: { name: "pk", definition: "pk" },
+  sortKey: { name: "sk", definition: "sk" },
+  ttl: { attributeName: "expiresAt" },
+});
+```
+
+#### Entity-level TTL behavior
+
+Control automatic TTL injection per entity:
+
+```typescript
+const sessionEntity = defineEntity({
+  name: "Session",
+  schema: sessionSchema,
+  table,
+  partitionKey: "SESSION#{{sessionId}}",
+  sortKey: "METADATA",
+  ttl: {
+    // Auto-inject this TTL value on every put (30 days from now)
+    defaultTtlSeconds: 60 * 60 * 24 * 30,
+    // Refresh the TTL on every update (sliding expiry)
+    autoUpdateTtlSeconds: 60 * 60 * 24 * 30,
+  },
+});
+```
+
+Both fields are optional and independent. For example, you can set `autoUpdateTtlSeconds` without `defaultTtlSeconds` if you want sliding expiry on updates but not automatic injection on creation.
+
+The TTL value injected is always `Math.floor(Date.now() / 1000) + <seconds>` (Unix epoch seconds, as required by DynamoDB).
+
 ### Type Inference
 
 The library infers TypeScript types from your schema definitions:
@@ -209,7 +251,7 @@ All operations return `Result<T, DynamoError>`. Check `result.success` to determ
 
 ### Put
 
-Writes an item to the table. The item is validated against the entity schema before writing.
+Writes an item to the table. The item is validated against the entity schema before writing. If the entity has `ttl.defaultTtlSeconds` configured, the TTL attribute is automatically injected.
 
 ```typescript
 const result = await users.put({
@@ -224,6 +266,14 @@ if (!result.success) {
   // result.error.type is "validation" | "key" | "marshalling" | "dynamo"
   console.error(result.error.type, result.error.message);
 }
+```
+
+If the entity has a `defaultTtlSeconds` configured, the TTL attribute is computed and written automatically — you do not need to include it in your data:
+
+```typescript
+// Entity configured with ttl: { defaultTtlSeconds: 3600 }
+// The "expiresAt" attribute is injected automatically (now + 1 hour)
+await sessions.put({ sessionId: "abc", userId: "123" });
 ```
 
 **Options:**
@@ -336,6 +386,39 @@ await users.update(
     expressionValues: { ":minAge": 18 },
   },
 );
+```
+
+**TTL auto-refresh on update:**
+
+If the entity has `ttl.autoUpdateTtlSeconds` configured, a `SET` action for the TTL attribute is automatically appended to every update expression (sliding expiry). To suppress this for a specific update, pass `skipAutoTtl: true`:
+
+```typescript
+// Entity configured with ttl: { autoUpdateTtlSeconds: 3600 }
+
+// Normal update — TTL is automatically refreshed to now + 1 hour
+await sessions.update({ sessionId: "abc" }, (u) => u.set("lastSeen", Date.now()));
+
+// Administrative update — TTL is NOT refreshed
+await sessions.update(
+  { sessionId: "abc" },
+  (u) => u.set("flagged", true),
+  { skipAutoTtl: true },
+);
+```
+
+### Remove TTL
+
+Removes the TTL attribute from an existing item, preventing it from expiring. Requires the entity's table to have a `ttl` config.
+
+```typescript
+const result = await sessions.removeTtl({ sessionId: "abc" });
+
+if (result.success) {
+  console.log("Session will no longer expire");
+} else {
+  // result.error.type === "validation" if table has no TTL configured
+  console.error(result.error.message);
+}
 ```
 
 ### Query
@@ -885,6 +968,9 @@ if (!result.success) {
 | Index key names/types | `error` | Index partition and sort key names and types must match |
 | GSI status | `warning` | Reports if a GSI status is not `"ACTIVE"` |
 | Extra AWS indexes | `info` | Indexes in AWS that are not defined locally are reported |
+| TTL attribute empty | `error` | `ttl.attributeName` must not be empty or whitespace |
+| TTL conflicts with partition key | `error` | `ttl.attributeName` must not be the same as the partition key name |
+| TTL conflicts with sort key | `error` | `ttl.attributeName` must not be the same as the sort key name |
 
 **Using in CI or startup checks:**
 
@@ -1039,12 +1125,13 @@ if (item.success) {
 
 | Method | Description |
 |--------|-------------|
-| `entity.put(data, options?)` | Write an item (validates against schema) |
+| `entity.put(data, options?)` | Write an item (validates against schema, auto-injects TTL if configured) |
 | `entity.get(key, options?)` | Get an item by key |
 | `entity.delete(key, options?)` | Delete an item by key |
-| `entity.update(key, builderFn, options?)` | Update with type-safe expression builder |
+| `entity.update(key, builderFn, options?)` | Update with type-safe expression builder (auto-refreshes TTL if configured) |
 | `entity.query(input)` | Query by partition key with sort key conditions |
 | `entity.scan(options?)` | Scan table or index |
+| `entity.removeTtl(key)` | Remove the TTL attribute from an item so it never expires |
 
 ### Type Utilities
 
@@ -1054,6 +1141,8 @@ if (item.success) {
 | `EntityKeyInput<E>` | Infer the key input type for an entity |
 | `EntityKeyFields<E>` | Union of field names in the entity's key templates |
 | `ExtractTemplateFields<T>` | Extract field names from a template string type |
+| `TtlConfig` | Table-level TTL config: `{ attributeName: string }` |
+| `EntityTtlConfig` | Entity-level TTL behavior: `{ defaultTtlSeconds?, autoUpdateTtlSeconds? }` |
 | `Result<T, E>` | Success/failure discriminated union |
 | `DynamoError` | Error type with `type`, `message`, and `cause` |
 

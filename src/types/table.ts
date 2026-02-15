@@ -14,6 +14,27 @@ export interface KeyAttribute {
   readonly type?: KeyAttributeType | undefined;
 }
 
+/**
+ * TTL (Time to Live) configuration for a table.
+ *
+ * Specifies which DynamoDB attribute is used as the TTL field.
+ * The attribute must contain a Unix epoch timestamp (seconds) and
+ * TTL must be enabled on the table in AWS.
+ *
+ * @example
+ * ```ts
+ * const table = defineTable({
+ *   tableName: "MainTable",
+ *   partitionKey: { name: "pk", definition: "pk" },
+ *   ttl: { attributeName: "expiresAt" },
+ * });
+ * ```
+ */
+export interface TtlConfig {
+  /** The name of the DynamoDB attribute used for TTL (must be a Number type in DynamoDB). */
+  readonly attributeName: string;
+}
+
 /** Index type discriminator. */
 export type IndexType = "GSI" | "LSI";
 
@@ -36,6 +57,8 @@ export interface TableConfig<
   readonly partitionKey: KeyAttribute;
   readonly sortKey?: KeyAttribute | undefined;
   readonly indexes?: Indexes | undefined;
+  /** Optional TTL configuration for the table. */
+  readonly ttl?: TtlConfig | undefined;
 }
 
 /** The frozen, immutable table definition produced by `defineTable()`. */
@@ -49,4 +72,6 @@ export interface TableDefinition<
   readonly partitionKey: KeyAttribute;
   readonly sortKey?: KeyAttribute | undefined;
   readonly indexes: Indexes;
+  /** TTL configuration for the table, if set. */
+  readonly ttl?: TtlConfig | undefined;
 }

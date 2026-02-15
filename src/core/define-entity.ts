@@ -71,4 +71,5 @@ export const defineEntity = <
     indexes: config.indexes as
       | (T extends TableDefinition<infer I> ? EntityIndexKeys<I> : never)
       | undefined,
+    ttl: config.ttl ? Object.freeze({ ...config.ttl }) : undefined,
   });
