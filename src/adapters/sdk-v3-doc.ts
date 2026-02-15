@@ -15,7 +15,8 @@ interface DynamoDBDocumentClientV3 {
 
 /** Minimal command constructor shape. */
 interface CommandConstructor {
-  new (input: unknown): unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  new (input: any): unknown;
 }
 
 /**
@@ -38,7 +39,7 @@ export const createSDKv3DocAdapter = (
     readonly BatchGetCommand: CommandConstructor;
     readonly TransactWriteCommand: CommandConstructor;
     readonly TransactGetCommand: CommandConstructor;
-    readonly DescribeTableCommand: CommandConstructor;
+    readonly DescribeTableCommand?: CommandConstructor;
   },
 ): SDKAdapter =>
   Object.freeze({
@@ -339,6 +340,11 @@ export const createSDKv3DocAdapter = (
       };
     },
     describeTable: async (input) => {
+      if (!commands.DescribeTableCommand) {
+        throw new Error(
+          "DescribeTableCommand was not provided to the adapter. Pass it in the commands object to use validateTable.",
+        );
+      }
       const result = await client.send(
         new commands.DescribeTableCommand({
           TableName: input.tableName,
