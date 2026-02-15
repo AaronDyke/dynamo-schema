@@ -11,6 +11,12 @@ export interface SetAction {
   readonly value: unknown;
 }
 
+/** A single SET if_not_exists action. */
+export interface SetIfNotExistsAction {
+  readonly path: string;
+  readonly value: unknown;
+}
+
 /** A single ADD action (for numbers and sets). */
 export interface AddAction {
   readonly path: string;
@@ -26,6 +32,7 @@ export interface DeleteAction {
 /** Accumulated update actions from the builder. */
 export interface UpdateActions {
   readonly sets: readonly SetAction[];
+  readonly setIfNotExists: readonly SetIfNotExistsAction[];
   readonly removes: readonly string[];
   readonly adds: readonly AddAction[];
   readonly deletes: readonly DeleteAction[];
@@ -42,6 +49,7 @@ export interface UpdateActions {
  * const actions = builder
  *   .set("name", "Alice")
  *   .set("age", 31)
+ *   .setIfNotExists("createdAt", Date.now())
  *   .remove("temporaryField")
  *   .add("loginCount", 1)
  *   .build();
@@ -50,6 +58,12 @@ export interface UpdateActions {
 export interface UpdateBuilder<T> {
   /** SET an attribute to a value. */
   readonly set: <K extends string & keyof T>(
+    path: K,
+    value: T[K],
+  ) => UpdateBuilder<T>;
+
+  /** SET an attribute to a value only if the attribute does not already exist (uses DynamoDB's if_not_exists function). */
+  readonly setIfNotExists: <K extends string & keyof T>(
     path: K,
     value: T[K],
   ) => UpdateBuilder<T>;

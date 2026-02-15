@@ -288,10 +288,11 @@ Updates an item using a type-safe expression builder. The builder provides autoc
 const result = await users.update(
   { userId: "123" },
   (u) => u
-    .set("name", "Alice Smith")     // SET name = "Alice Smith"
-    .set("age", 31)                 // SET age = 31
-    .remove("temporaryField")       // REMOVE temporaryField
-    .add("loginCount", 1)           // ADD loginCount 1
+    .set("name", "Alice Smith")          // SET name = "Alice Smith"
+    .set("age", 31)                      // SET age = 31
+    .setIfNotExists("createdAt", "2024-01-01") // SET createdAt = if_not_exists(createdAt, "2024-01-01")
+    .remove("temporaryField")            // REMOVE temporaryField
+    .add("loginCount", 1)               // ADD loginCount 1
 );
 ```
 
@@ -300,9 +301,28 @@ const result = await users.update(
 | Method | DynamoDB Action | Description |
 |--------|----------------|-------------|
 | `.set(path, value)` | `SET` | Set an attribute to a value |
+| `.setIfNotExists(path, value)` | `SET` | Set an attribute only if it does not already exist (uses `if_not_exists`) |
 | `.remove(path)` | `REMOVE` | Remove an attribute |
 | `.add(path, value)` | `ADD` | Add to a number or add elements to a set |
 | `.delete(path, value)` | `DELETE` | Remove elements from a set |
+
+**`setIfNotExists` example — initializing fields on first update:**
+
+```typescript
+// Set createdAt on first update, never overwrite it on subsequent updates.
+// Set updatedAt unconditionally on every update.
+await users.update(
+  { userId: "123" },
+  (u) => u
+    .setIfNotExists("createdAt", new Date().toISOString())
+    .set("updatedAt", new Date().toISOString())
+    .set("name", "Alice Smith"),
+);
+// Produces:
+// SET #sne0_createdAt = if_not_exists(#sne0_createdAt, :sne0_createdAt),
+//     #s0_updatedAt = :s0_updatedAt,
+//     #s1_name = :s1_name
+```
 
 **Update with condition:**
 

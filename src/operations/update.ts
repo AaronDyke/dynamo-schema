@@ -35,6 +35,7 @@ export interface UpdateOptions {
 export const createUpdateBuilder = <T>(): UpdateBuilder<T> => {
   const emptyActions: UpdateActions = Object.freeze({
     sets: [],
+    setIfNotExists: [],
     removes: [],
     adds: [],
     deletes: [],
@@ -47,6 +48,17 @@ export const createUpdateBuilder = <T>(): UpdateBuilder<T> => {
           Object.freeze({
             ...actions,
             sets: [...actions.sets, Object.freeze({ path, value })],
+          }),
+        ),
+
+      setIfNotExists: <K extends string & keyof T>(path: K, value: T[K]) =>
+        makeBuilder(
+          Object.freeze({
+            ...actions,
+            setIfNotExists: [
+              ...actions.setIfNotExists,
+              Object.freeze({ path, value }),
+            ],
           }),
         ),
 
@@ -98,15 +110,26 @@ export const compileUpdateActions = (
   const values: Record<string, unknown> = {};
   const clauses: string[] = [];
 
-  // SET clause
-  if (actions.sets.length > 0) {
-    const setParts = actions.sets.map((action, i) => {
-      const nameAlias = aliasAttributeName(`s${i}_${action.path}`);
-      const valueAlias = valuePlaceholder(`s${i}_${action.path}`);
-      names[nameAlias] = action.path;
-      values[valueAlias] = action.value;
-      return `${nameAlias} = ${valueAlias}`;
-    });
+  // SET clause (includes regular sets and setIfNotExists)
+  const setParts: string[] = [];
+
+  actions.sets.forEach((action, i) => {
+    const nameAlias = aliasAttributeName(`s${i}_${action.path}`);
+    const valueAlias = valuePlaceholder(`s${i}_${action.path}`);
+    names[nameAlias] = action.path;
+    values[valueAlias] = action.value;
+    setParts.push(`${nameAlias} = ${valueAlias}`);
+  });
+
+  actions.setIfNotExists.forEach((action, i) => {
+    const nameAlias = aliasAttributeName(`sne${i}_${action.path}`);
+    const valueAlias = valuePlaceholder(`sne${i}_${action.path}`);
+    names[nameAlias] = action.path;
+    values[valueAlias] = action.value;
+    setParts.push(`${nameAlias} = if_not_exists(${nameAlias}, ${valueAlias})`);
+  });
+
+  if (setParts.length > 0) {
     clauses.push(`SET ${setParts.join(", ")}`);
   }
 
@@ -201,6 +224,7 @@ export const executeUpdate = async <
 
   if (
     actions.sets.length === 0 &&
+    actions.setIfNotExists.length === 0 &&
     actions.removes.length === 0 &&
     actions.adds.length === 0 &&
     actions.deletes.length === 0
