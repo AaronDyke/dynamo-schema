@@ -643,7 +643,7 @@ await users.scan({
 
 ### Batch Write
 
-Writes or deletes multiple items across entities. Automatically chunks into groups of 25 (the DynamoDB limit) and retries unprocessed items once.
+Writes or deletes multiple items across entities. Automatically chunks into groups of 25 (the DynamoDB limit) and retries `UnprocessedItems` with exponential backoff (default: 3 retries at 100ms, 200ms, 400ms).
 
 ```typescript
 const result = await client.batchWrite([
@@ -665,9 +665,23 @@ const result = await client.batchWrite([
 ]);
 ```
 
+**Custom retry options:**
+
+```typescript
+await client.batchWrite(requests, {
+  retryOptions: {
+    maxAttempts: 6,    // 1 initial + 5 retries (default: 4)
+    baseDelayMs: 200,  // 200ms → 400ms → 800ms ... (default: 100)
+    maxDelayMs: 10000, // cap at 10s (default: 5000)
+  },
+});
+```
+
+If items remain unprocessed after all attempts, the operation returns a `DynamoError` (rather than silently discarding them).
+
 ### Batch Get
 
-Retrieves multiple items across entities. Automatically chunks into groups of 100 (the DynamoDB limit) and retries unprocessed keys once.
+Retrieves multiple items across entities. Automatically chunks into groups of 100 (the DynamoDB limit) and retries `UnprocessedKeys` with exponential backoff (default: 3 retries at 100ms, 200ms, 400ms).
 
 ```typescript
 const result = await client.batchGet([
@@ -690,6 +704,28 @@ if (result.success) {
   }
 }
 ```
+
+**Custom retry options:**
+
+```typescript
+await client.batchGet(requests, {
+  retryOptions: {
+    maxAttempts: 5,    // 1 initial + 4 retries (default: 4)
+    baseDelayMs: 150,  // 150ms → 300ms → 600ms ... (default: 100)
+    maxDelayMs: 3000,  // cap at 3s (default: 5000)
+  },
+});
+```
+
+If keys remain unprocessed after all attempts, the operation returns a `DynamoError`.
+
+**Retry defaults summary:**
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| `maxAttempts` | `4` | 1 initial + 3 retries |
+| `baseDelayMs` | `100` | 100ms → 200ms → 400ms |
+| `maxDelayMs` | `5000` | Maximum delay cap |
 
 ---
 
@@ -1381,8 +1417,8 @@ if (item.success) {
 | Method | Description |
 |--------|-------------|
 | `client.entity(entityDef)` | Returns a type-safe `EntityClient` for the entity |
-| `client.batchWrite(requests, options?)` | Batch write with auto-chunking (25 items) |
-| `client.batchGet(requests)` | Batch get with auto-chunking (100 items) |
+| `client.batchWrite(requests, options?)` | Batch write with auto-chunking (25 items) + exponential backoff retry |
+| `client.batchGet(requests, options?)` | Batch get with auto-chunking (100 items) + exponential backoff retry |
 | `client.transactWrite(requests, options?)` | Atomic write transaction (up to 100 items) |
 | `client.transactGet(requests)` | Atomic get transaction (up to 100 items) |
 

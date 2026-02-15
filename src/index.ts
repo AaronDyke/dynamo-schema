@@ -50,7 +50,10 @@ export type { EntityQueryInput, SortKeyCondition, PartitionKeyCondition } from "
 
 // Batch operation types
 export type { BatchPutRequest, BatchDeleteRequest, BatchWriteRequestItem, BatchWriteOptions } from "./operations/batch-write.js";
-export type { BatchGetEntityRequest, BatchGetResult } from "./operations/batch-get.js";
+export type { BatchGetEntityRequest, BatchGetResult, BatchGetOptions } from "./operations/batch-get.js";
+
+// Retry utilities
+export type { RetryOptions } from "./utils/retry.js";
 
 // Transaction operation types
 export type { TransactPutRequest, TransactDeleteRequest, TransactUpdateRequest, TransactConditionCheckRequest, TransactWriteRequestItem, TransactWriteOptions } from "./operations/transact-write.js";

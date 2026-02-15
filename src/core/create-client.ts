@@ -28,7 +28,7 @@ import { executeScan } from "../operations/scan.js";
 import { executeUpdate, type UpdateOptions } from "../operations/update.js";
 import { executeRemoveTtl } from "../operations/remove-ttl.js";
 import { executeBatchWrite, type BatchWriteRequestItem, type BatchWriteOptions } from "../operations/batch-write.js";
-import { executeBatchGet, type BatchGetEntityRequest, type BatchGetResult } from "../operations/batch-get.js";
+import { executeBatchGet, type BatchGetEntityRequest, type BatchGetResult, type BatchGetOptions } from "../operations/batch-get.js";
 import { executeTransactWrite, type TransactWriteRequestItem, type TransactWriteOptions } from "../operations/transact-write.js";
 import { executeTransactGet, type TransactGetEntityRequest, type TransactGetResult } from "../operations/transact-get.js";
 
@@ -109,6 +109,7 @@ export interface DynamoClient {
   /** Batch get items across multiple entities. */
   readonly batchGet: (
     requests: readonly BatchGetEntityRequest[],
+    options?: BatchGetOptions,
   ) => Promise<Result<BatchGetResult, DynamoError>>;
 
   /** Transactional write across multiple entities. */
@@ -235,8 +236,10 @@ export const createClient = (config: ClientConfig): DynamoClient => {
           : options,
       ),
 
-    batchGet: (requests: readonly BatchGetEntityRequest[]) =>
-      executeBatchGet(adapter, requests),
+    batchGet: (
+      requests: readonly BatchGetEntityRequest[],
+      options?: BatchGetOptions,
+    ) => executeBatchGet(adapter, requests, options),
 
     transactWrite: (
       requests: readonly TransactWriteRequestItem[],

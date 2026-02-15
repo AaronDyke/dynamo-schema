@@ -1,8 +1,11 @@
 /**
- * BatchGet operation: retrieves multiple items across entities with auto-chunking.
+ * BatchGet operation: retrieves multiple items across entities with auto-chunking
+ * and exponential backoff retry for unprocessed keys.
  *
- * DynamoDB limits batch get to 100 items per request.
- * This operation handles chunking automatically.
+ * DynamoDB limits batch get to 100 items per request. When DynamoDB throttles
+ * a batch and returns UnprocessedKeys, this operation retries automatically
+ * with exponential backoff until all keys are resolved or the attempt limit
+ * is reached.
  */
 
 import type { StandardSchemaV1 } from "../standard-schema/types.js";
@@ -17,6 +20,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchGetItem request. */
 const BATCH_GET_LIMIT = 100;
@@ -27,6 +31,20 @@ export interface BatchGetEntityRequest<S extends StandardSchemaV1 = StandardSche
   readonly keys: readonly Readonly<Record<string, string>>[];
   readonly consistentRead?: boolean | undefined;
   readonly projection?: readonly string[] | undefined;
+}
+
+/** Options for batch get operations. */
+export interface BatchGetOptions {
+  /**
+   * Retry options for handling DynamoDB's `UnprocessedKeys` responses.
+   *
+   * When DynamoDB throttles a batch get and returns some keys as unprocessed,
+   * the operation retries those keys automatically with exponential backoff.
+   *
+   * Defaults: `{ maxAttempts: 4, baseDelayMs: 100, maxDelayMs: 5000 }`
+   * (1 initial attempt + up to 3 retries at 100ms, 200ms, 400ms).
+   */
+  readonly retryOptions?: RetryOptions | undefined;
 }
 
 /** Result for a batch get, keyed by entity name. */
@@ -71,15 +89,72 @@ const chunk = <T>(items: readonly T[], size: number): readonly (readonly T[])[] 
 };
 
 /**
- * Executes a BatchGet operation with auto-chunking.
+ * Processes batch get responses and appends items to `allResponses`.
+ * Returns a DynamoError if unmarshalling fails.
+ */
+const processResponses = (
+  responses: Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
+  chunkKeys: ReadonlyArray<{ tableName: string; entityName: string; key: Record<string, unknown> }>,
+  allResponses: Record<string, Record<string, unknown>[]>,
+  isRaw: boolean,
+): DynamoError | undefined => {
+  for (const [tableName, items] of Object.entries(responses)) {
+    const entityName =
+      chunkKeys.find((fk) => fk.tableName === tableName)?.entityName ?? tableName;
+
+    if (!allResponses[entityName]) {
+      allResponses[entityName] = [];
+    }
+
+    for (const rawItem of items) {
+      if (isRaw) {
+        const unmarshalled = unmarshallItem(rawItem as AttributeMap);
+        if (!unmarshalled.success) {
+          return createDynamoError(
+            "marshalling",
+            unmarshalled.error.message,
+            unmarshalled.error,
+          );
+        }
+        allResponses[entityName]!.push(unmarshalled.data);
+      } else {
+        allResponses[entityName]!.push(rawItem as Record<string, unknown>);
+      }
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Executes a BatchGet operation with auto-chunking and exponential backoff retry.
+ *
+ * - Automatically chunks requests into groups of 100 (the DynamoDB limit).
+ * - When DynamoDB returns `UnprocessedKeys`, retries them with exponential
+ *   backoff (default: up to 3 retries at 100ms, 200ms, 400ms intervals).
+ * - Returns a `DynamoError` if keys remain unprocessed after all retries.
  *
  * @param adapter - The SDK adapter
  * @param requests - Array of entity get requests
+ * @param options - Optional retry configuration
  * @returns A Result containing responses grouped by entity name, or a DynamoError
+ *
+ * @example
+ * ```ts
+ * // Works transparently with any number of items — auto-chunks + retries
+ * const result = await client.batchGet([
+ *   { entity: UserEntity, keys: userIds.map(id => ({ userId: id })) },
+ * ]);
+ *
+ * // Custom retry options
+ * const result = await client.batchGet(requests, {
+ *   retryOptions: { maxAttempts: 5, baseDelayMs: 200 },
+ * });
+ * ```
  */
 export const executeBatchGet = async (
   adapter: SDKAdapter,
   requests: readonly BatchGetEntityRequest[],
+  options?: BatchGetOptions,
 ): Promise<Result<BatchGetResult, DynamoError>> => {
   // 1. Build keys for each request and flatten into adapter format
   type FlatKey = { tableName: string; entityName: string; key: Record<string, unknown> };
@@ -135,12 +210,13 @@ export const executeBatchGet = async (
     }
   }
 
-  // 2. Chunk and execute
+  // 2. Chunk into groups of 100 and execute each chunk
   const allResponses: Record<string, Record<string, unknown>[]> = {};
   const keyChunks = chunk(flatKeys, BATCH_GET_LIMIT);
+  const maxAttempts = options?.retryOptions?.maxAttempts ?? 4;
 
   for (const chunkKeys of keyChunks) {
-    // Group by table
+    // Group by table for the initial request
     const byTable = new Map<string, Record<string, unknown>[]>();
     for (const fk of chunkKeys) {
       if (!byTable.has(fk.tableName)) {
@@ -161,86 +237,68 @@ export const executeBatchGet = async (
       });
     }
 
+    // 3. Initial call
+    let result;
     try {
-      const result = await adapter.batchGetItem(batchReqs);
-
-      // Process responses
-      for (const [tableName, items] of Object.entries(result.responses)) {
-        // Find entity name for this table
-        const entityName =
-          chunkKeys.find((fk) => fk.tableName === tableName)?.entityName ??
-          tableName;
-
-        if (!allResponses[entityName]) {
-          allResponses[entityName] = [];
-        }
-
-        for (const rawItem of items) {
-          if (adapter.isRaw) {
-            const unmarshalled = unmarshallItem(rawItem as AttributeMap);
-            if (!unmarshalled.success) {
-              return err(
-                createDynamoError(
-                  "marshalling",
-                  unmarshalled.error.message,
-                  unmarshalled.error,
-                ),
-              );
-            }
-            allResponses[entityName]!.push(unmarshalled.data);
-          } else {
-            allResponses[entityName]!.push(rawItem as Record<string, unknown>);
-          }
-        }
-      }
-
-      // Handle unprocessed keys with a single retry
-      if (result.unprocessedKeys.length > 0) {
-        try {
-          const retryResult = await adapter.batchGetItem(result.unprocessedKeys);
-          for (const [tableName, items] of Object.entries(retryResult.responses)) {
-            const entityName =
-              chunkKeys.find((fk) => fk.tableName === tableName)?.entityName ??
-              tableName;
-
-            if (!allResponses[entityName]) {
-              allResponses[entityName] = [];
-            }
-
-            for (const rawItem of items) {
-              if (adapter.isRaw) {
-                const unmarshalled = unmarshallItem(rawItem as AttributeMap);
-                if (!unmarshalled.success) {
-                  return err(
-                    createDynamoError(
-                      "marshalling",
-                      unmarshalled.error.message,
-                      unmarshalled.error,
-                    ),
-                  );
-                }
-                allResponses[entityName]!.push(unmarshalled.data);
-              } else {
-                allResponses[entityName]!.push(rawItem as Record<string, unknown>);
-              }
-            }
-          }
-        } catch (cause) {
-          return err(
-            createDynamoError(
-              "dynamo",
-              cause instanceof Error ? cause.message : "BatchGet retry failed",
-              cause,
-            ),
-          );
-        }
-      }
+      result = await adapter.batchGetItem(batchReqs);
     } catch (cause) {
       return err(
         createDynamoError(
           "dynamo",
           cause instanceof Error ? cause.message : "BatchGet operation failed",
           cause,
+        ),
+      );
+    }
+
+    // Process initial responses
+    const initialError = processResponses(
+      result.responses as Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
+      chunkKeys,
+      allResponses,
+      adapter.isRaw,
+    );
+    if (initialError) return err(initialError);
+
+    // 4. Retry unprocessed keys with exponential backoff
+    let unprocessed: ReadonlyArray<BatchGetRequest> = result.unprocessedKeys;
+
+    for (let retryIndex = 0; retryIndex < maxAttempts - 1 && unprocessed.length > 0; retryIndex++) {
+      const delay = computeBackoffDelay(retryIndex, options?.retryOptions);
+      await sleep(delay);
+
+      let retryResult;
+      try {
+        retryResult = await adapter.batchGetItem(unprocessed);
+      } catch (cause) {
+        return err(
+          createDynamoError(
+            "dynamo",
+            cause instanceof Error ? cause.message : "BatchGet retry failed",
+            cause,
+          ),
+        );
+      }
+
+      const retryError = processResponses(
+        retryResult.responses as Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
+        chunkKeys,
+        allResponses,
+        adapter.isRaw,
+      );
+      if (retryError) return err(retryError);
+
+      unprocessed = retryResult.unprocessedKeys;
+    }
+
+    // 5. Fail if keys remain unprocessed after all attempts
+    if (unprocessed.length > 0) {
+      const totalUnprocessed = unprocessed.reduce((n, req) => n + req.keys.length, 0);
+      return err(
+        createDynamoError(
+          "dynamo",
+          `BatchGet: ${totalUnprocessed} key(s) remained unprocessed after ${maxAttempts} attempt(s). ` +
+            `Consider increasing retryOptions.maxAttempts or checking for persistent throttling.`,
         ),
       );
     }

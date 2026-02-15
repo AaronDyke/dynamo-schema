@@ -1,8 +1,11 @@
 /**
- * BatchWrite operation: writes multiple items across entities with auto-chunking.
+ * BatchWrite operation: writes multiple items across entities with auto-chunking
+ * and exponential backoff retry for unprocessed items.
  *
- * DynamoDB limits batch write to 25 items per request.
- * This operation handles chunking automatically.
+ * DynamoDB limits batch write to 25 items per request. When DynamoDB throttles
+ * a batch and returns UnprocessedItems, this operation retries automatically
+ * with exponential backoff until all items are written or the attempt limit
+ * is reached.
  */
 
 import type { StandardSchemaV1 } from "../standard-schema/types.js";
@@ -16,6 +19,7 @@ import { validate } from "../validation/validate.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
+import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchWriteItem request. */
 const BATCH_WRITE_LIMIT = 25;
@@ -40,6 +44,16 @@ export type BatchWriteRequestItem = BatchPutRequest | BatchDeleteRequest;
 /** Options for batch write. */
 export interface BatchWriteOptions {
   readonly skipValidation?: boolean | undefined;
+  /**
+   * Retry options for handling DynamoDB's `UnprocessedItems` responses.
+   *
+   * When DynamoDB throttles a batch write and returns some items as unprocessed,
+   * the operation retries those items automatically with exponential backoff.
+   *
+   * Defaults: `{ maxAttempts: 4, baseDelayMs: 100, maxDelayMs: 5000 }`
+   * (1 initial attempt + up to 3 retries at 100ms, 200ms, 400ms).
+   */
+  readonly retryOptions?: RetryOptions | undefined;
 }
 
 /**
@@ -230,6 +244,7 @@ export const executeBatchWrite = async (
   }
 
   const chunks = chunk(flatRequests, BATCH_WRITE_LIMIT);
+  const maxAttempts = options?.retryOptions?.maxAttempts ?? 4;
 
   // 4. Execute each chunk
   for (const chunkItems of chunks) {
@@ -250,31 +265,49 @@ export const executeBatchWrite = async (
       batchReqs.push({ tableName, requests: reqs });
     }
 
+    // 5. Initial call
+    let result;
     try {
-      const result = await adapter.batchWriteItem(batchReqs);
-
-      // Handle unprocessed items with a single retry
-      if (result.unprocessedItems.length > 0) {
-        try {
-          await adapter.batchWriteItem(result.unprocessedItems);
-        } catch (cause) {
-          return err(
-            createDynamoError(
-              "dynamo",
-              cause instanceof Error
-                ? cause.message
-                : "BatchWrite retry failed",
-              cause,
-            ),
-          );
-        }
-      }
+      result = await adapter.batchWriteItem(batchReqs);
     } catch (cause) {
       return err(
         createDynamoError(
           "dynamo",
           cause instanceof Error ? cause.message : "BatchWrite operation failed",
           cause,
+        ),
+      );
+    }
+
+    // 6. Retry unprocessed items with exponential backoff
+    let unprocessed: ReadonlyArray<BatchWriteRequest> = result.unprocessedItems;
+
+    for (let retryIndex = 0; retryIndex < maxAttempts - 1 && unprocessed.length > 0; retryIndex++) {
+      const delay = computeBackoffDelay(retryIndex, options?.retryOptions);
+      await sleep(delay);
+
+      try {
+        const retryResult = await adapter.batchWriteItem(unprocessed);
+        unprocessed = retryResult.unprocessedItems;
+      } catch (cause) {
+        return err(
+          createDynamoError(
+            "dynamo",
+            cause instanceof Error ? cause.message : "BatchWrite retry failed",
+            cause,
+          ),
+        );
+      }
+    }
+
+    // 7. Fail if items remain unprocessed after all attempts
+    if (unprocessed.length > 0) {
+      const totalUnprocessed = unprocessed.reduce((n, req) => n + req.requests.length, 0);
+      return err(
+        createDynamoError(
+          "dynamo",
+          `BatchWrite: ${totalUnprocessed} item(s) remained unprocessed after ${maxAttempts} attempt(s). ` +
+            `Consider increasing retryOptions.maxAttempts or checking for persistent throttling.`,
         ),
       );
     }
