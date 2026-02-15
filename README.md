@@ -11,6 +11,7 @@ Type-safe DynamoDB schema validation and modeling for TypeScript. Works with any
 - **All DynamoDB operations** -- Put, Get, Delete, Update, Query, Scan, BatchWrite, BatchGet, TransactWrite, TransactGet
 - **Type-safe update builder** -- chainable, immutable expression builder with autocomplete on attribute names
 - **TTL support** -- configure a TTL attribute on the table, auto-inject expiry on `put`, auto-refresh on `update`, and remove TTL from a specific item
+- **Lifecycle hooks** -- attach cross-cutting behavior (`beforePut`, `beforeUpdate`, `afterGet`, `beforeDelete`) to any entity for audit logging, soft-delete, auto-timestamps, and more
 - **Runtime validation** -- validates inputs/outputs through Standard Schema at runtime (configurable)
 - **SDK flexible** -- supports AWS SDK v2 and v3, both raw DynamoDB client and DocumentClient
 - **Zero runtime dependencies** -- marshalling, validation wrappers, and Standard Schema types are all self-contained
@@ -807,6 +808,134 @@ const mockAdapter: SDKAdapter = {
 
 ---
 
+## Lifecycle Hooks
+
+Entity lifecycle hooks let you attach cross-cutting behavior — audit logging, auto-timestamps, soft-delete, access control — to any entity **without wrapping every call manually**.
+
+Hooks are defined in `defineEntity` and are **run by default** on every matching operation. Pass `skipHooks: true` in any operation's options to bypass all hooks for that specific call.
+
+### Available hooks
+
+| Hook | Operation | When it runs | Can abort? |
+|------|-----------|--------------|-----------|
+| `beforePut` | `put` | After schema validation, before key building | Yes — throw to abort |
+| `beforeUpdate` | `update` | After builder runs, before TTL injection | Yes — throw to abort |
+| `afterGet` | `get` | After item is fetched and unmarshalled | Yes — throw to abort |
+| `beforeDelete` | `delete` | Before the DynamoDB call | Yes — throw to abort |
+
+### Auto-inject timestamps
+
+```typescript
+import { defineEntity } from "dynamo-schema";
+
+const UserEntity = defineEntity({
+  name: "User",
+  schema: UserSchema,
+  table: UserTable,
+  partitionKey: "USER#{{userId}}",
+  sortKey: "PROFILE",
+  hooks: {
+    // Stamp updatedAt on every write
+    beforePut: (item) => ({ ...item, updatedAt: Date.now() }),
+
+    // Stamp updatedAt on every update expression
+    beforeUpdate: (_key, actions) => ({
+      ...actions,
+      sets: [...actions.sets, { path: "updatedAt", value: Date.now() }],
+    }),
+  },
+});
+```
+
+### Soft-delete with `beforeDelete`
+
+```typescript
+const OrderEntity = defineEntity({
+  name: "Order",
+  schema: OrderSchema,
+  table: OrderTable,
+  partitionKey: "ORDER#{{orderId}}",
+  hooks: {
+    // Prevent hard deletes — direct callers to a safer API
+    beforeDelete: (_key) => {
+      throw new Error("Orders cannot be deleted. Call cancelOrder() instead.");
+    },
+  },
+});
+
+// This will fail with type "hook" rather than hitting DynamoDB
+const result = await orders.delete({ orderId: "ord-1" });
+if (!result.success && result.error.type === "hook") {
+  console.error(result.error.message);
+}
+```
+
+### Transform results with `afterGet`
+
+```typescript
+const ProductEntity = defineEntity({
+  name: "Product",
+  schema: ProductSchema,
+  table: ProductTable,
+  partitionKey: "PRODUCT#{{productId}}",
+  hooks: {
+    // Provide a default when the item does not exist
+    afterGet: (item) => item ?? { productId: "unknown", name: "Unknown Product", price: 0 },
+  },
+});
+```
+
+### Async hooks
+
+Every hook can be synchronous or asynchronous — both are fully supported:
+
+```typescript
+const AuditedEntity = defineEntity({
+  name: "AuditedItem",
+  schema: ItemSchema,
+  table: ItemTable,
+  partitionKey: "ITEM#{{itemId}}",
+  hooks: {
+    beforeDelete: async (key) => {
+      // Perform an async audit log write before allowing the delete
+      await auditLog.record("delete", key);
+    },
+  },
+});
+```
+
+### Skipping hooks for a single call
+
+Pass `skipHooks: true` to any operation to bypass all hooks for that specific call:
+
+```typescript
+// Administrative bulk import — skip hooks for performance
+await users.put(rawUser, { skipHooks: true });
+
+// Bypass soft-delete protection for an admin hard-delete
+await orders.delete({ orderId: "ord-1" }, { skipHooks: true });
+
+// Skip afterGet transformation to get the raw stored item
+const raw = await users.get({ userId: "u1" }, { skipHooks: true });
+```
+
+### Hook errors
+
+When a hook throws, the operation is aborted and the error is returned as a `DynamoError` with `type: "hook"`. The original thrown value is preserved in `error.cause`.
+
+```typescript
+const result = await orders.delete({ orderId: "ord-1" });
+if (!result.success) {
+  if (result.error.type === "hook") {
+    // A lifecycle hook aborted the operation
+    console.error("Hook blocked operation:", result.error.message);
+    console.error("Original error:", result.error.cause);
+  }
+}
+```
+
+---
+
 ## Error Handling
 
 All operations return `Result<T, DynamoError>` instead of throwing exceptions.
@@ -833,6 +962,11 @@ if (result.success) {
       // Marshalling/unmarshalling failed
       console.error("Marshalling error:", result.error.message);
       break;
+    case "hook":
+      // A lifecycle hook aborted the operation
+      console.error("Hook error:", result.error.message);
+      console.error("Cause:", result.error.cause);
+      break;
     case "dynamo":
       // DynamoDB service error
       console.error("DynamoDB error:", result.error.message);
@@ -846,7 +980,7 @@ if (result.success) {
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `type` | `"validation" \| "key" \| "marshalling" \| "dynamo"` | The category of error |
+| `type` | `"validation" \| "key" \| "marshalling" \| "hook" \| "dynamo"` | The category of error |
 | `message` | `string` | Human-readable error message |
 | `cause` | `unknown` | Optional underlying error |
 
@@ -1143,6 +1277,7 @@ if (item.success) {
 | `ExtractTemplateFields<T>` | Extract field names from a template string type |
 | `TtlConfig` | Table-level TTL config: `{ attributeName: string }` |
 | `EntityTtlConfig` | Entity-level TTL behavior: `{ defaultTtlSeconds?, autoUpdateTtlSeconds? }` |
+| `EntityHooks<T>` | Lifecycle hooks for an entity: `{ beforePut?, beforeUpdate?, afterGet?, beforeDelete? }` |
 | `Result<T, E>` | Success/failure discriminated union |
 | `DynamoError` | Error type with `type`, `message`, and `cause` |
 

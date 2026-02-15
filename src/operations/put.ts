@@ -45,8 +45,26 @@ export const executePut = async <
     }
   }
 
+  // 1.5. Run beforePut hook (unless skipped)
+  let itemData_: StandardSchemaV1.InferOutput<S> = data;
+  if (!options?.skipHooks && entity.hooks?.beforePut) {
+    try {
+      itemData_ = await entity.hooks.beforePut(data);
+    } catch (cause) {
+      return err(
+        createDynamoError(
+          "hook",
+          cause instanceof Error
+            ? `beforePut hook failed: ${cause.message}`
+            : "beforePut hook failed",
+          cause,
+        ),
+      );
+    }
+  }
+
   // 2. Build key attributes
-  const record = data as Record<string, unknown>;
+  const record = itemData_ as Record<string, unknown>;
   const pkTemplate = parseTemplate(entity.partitionKey);
   const pkResult = buildKeyValue(pkTemplate, record);
   if (!pkResult.success) {

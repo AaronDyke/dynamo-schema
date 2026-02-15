@@ -52,6 +52,23 @@ export const executeDelete = async <
     key[entity.table.sortKey.name] = skResult.data;
   }
 
+  // 1.5. Run beforeDelete hook (unless skipped)
+  if (!options?.skipHooks && entity.hooks?.beforeDelete) {
+    try {
+      await entity.hooks.beforeDelete(keyInput);
+    } catch (cause) {
+      return err(
+        createDynamoError(
+          "hook",
+          cause instanceof Error
+            ? `beforeDelete hook failed: ${cause.message}`
+            : "beforeDelete hook failed",
+          cause,
+        ),
+      );
+    }
+  }
+
   // 2. Marshall key if using raw adapter
   let marshalledKey: Record<string, unknown> = key;
   let exprValues = options?.expressionValues;

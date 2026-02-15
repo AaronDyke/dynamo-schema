@@ -6,7 +6,7 @@ import type { AttributeMap } from "../marshalling/types.js";
 
 /** Error type for DynamoDB operations. */
 export interface DynamoError {
-  readonly type: "dynamo" | "validation" | "marshalling" | "key";
+  readonly type: "dynamo" | "validation" | "marshalling" | "key" | "hook";
   readonly message: string;
   readonly cause?: unknown;
 }
@@ -25,12 +25,16 @@ export interface PutOptions {
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
   readonly skipValidation?: boolean | undefined;
+  /** When `true`, all entity hooks are bypassed for this call. Default: `false`. */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Options for Get operations. */
 export interface GetOptions {
   readonly consistentRead?: boolean | undefined;
   readonly projection?: readonly string[] | undefined;
+  /** When `true`, all entity hooks are bypassed for this call. Default: `false`. */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Options for Delete operations. */
@@ -38,6 +42,8 @@ export interface DeleteOptions {
   readonly condition?: string | undefined;
   readonly expressionNames?: Record<string, string> | undefined;
   readonly expressionValues?: Record<string, unknown> | undefined;
+  /** When `true`, all entity hooks are bypassed for this call. Default: `false`. */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Options for Query operations. */

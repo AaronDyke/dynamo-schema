@@ -101,6 +101,23 @@ export const executeGet = async <
 
   // 5. Item not found
   if (!result.item) {
+    // Run afterGet hook with undefined (unless skipped)
+    if (!options?.skipHooks && entity.hooks?.afterGet) {
+      try {
+        const hooked = await entity.hooks.afterGet(undefined);
+        return ok(hooked);
+      } catch (cause) {
+        return err(
+          createDynamoError(
+            "hook",
+            cause instanceof Error
+              ? `afterGet hook failed: ${cause.message}`
+              : "afterGet hook failed",
+            cause,
+          ),
+        );
+      }
+    }
     return ok(undefined);
   }
 
@@ -120,6 +137,26 @@ export const executeGet = async <
     itemData = unmarshalled.data;
   } else {
     itemData = result.item as Record<string, unknown>;
+  }
+
+  // 6.5. Run afterGet hook with found item (unless skipped)
+  if (!options?.skipHooks && entity.hooks?.afterGet) {
+    try {
+      const hooked = await entity.hooks.afterGet(
+        itemData as StandardSchemaV1.InferOutput<S>,
+      );
+      return ok(hooked);
+    } catch (cause) {
+      return err(
+        createDynamoError(
+          "hook",
+          cause instanceof Error
+            ? `afterGet hook failed: ${cause.message}`
+            : "afterGet hook failed",
+          cause,
+        ),
+      );
+    }
   }
 
   return ok(itemData as StandardSchemaV1.InferOutput<S>);

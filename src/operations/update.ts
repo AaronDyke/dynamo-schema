@@ -31,6 +31,8 @@ export interface UpdateOptions {
    * you do not want to extend the item's lifetime.
    */
   readonly skipAutoTtl?: boolean | undefined;
+  /** When `true`, all entity hooks are bypassed for this call. Default: `false`. */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /**
@@ -226,7 +228,24 @@ export const executeUpdate = async <
   // 2. Build update expression from builder
   const builder = createUpdateBuilder<StandardSchemaV1.InferOutput<S>>();
   const configured = builderFn(builder);
-  const actions = configured.build();
+  let actions = configured.build();
+
+  // 2.5. Run beforeUpdate hook (unless skipped)
+  if (!options?.skipHooks && entity.hooks?.beforeUpdate) {
+    try {
+      actions = await entity.hooks.beforeUpdate(keyInput, actions);
+    } catch (cause) {
+      return err(
+        createDynamoError(
+          "hook",
+          cause instanceof Error
+            ? `beforeUpdate hook failed: ${cause.message}`
+            : "beforeUpdate hook failed",
+          cause,
+        ),
+      );
+    }
+  }
 
   // Inject auto-TTL refresh if configured and not suppressed
   let actionsWithTtl = actions;

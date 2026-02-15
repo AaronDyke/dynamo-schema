@@ -5,6 +5,7 @@
 import type { StandardSchemaV1 } from "../standard-schema/types.js";
 import type { TableDefinition, IndexDefinition } from "./table.js";
 import type { ResolveKeyFields } from "../keys/template-types.js";
+import type { EntityHooks } from "./hooks.js";
 
 /**
  * TTL behavior configuration for an entity.
@@ -76,6 +77,8 @@ export interface EntityConfig<
     : undefined;
   /** Optional TTL behavior for this entity. Requires the table to have a `ttl` config. */
   readonly ttl?: EntityTtlConfig | undefined;
+  /** Optional lifecycle hooks for this entity. */
+  readonly hooks?: EntityHooks<StandardSchemaV1.InferOutput<S>> | undefined;
 }
 
 /**
@@ -97,6 +100,8 @@ export interface EntityDefinition<
     | undefined;
   /** TTL behavior for this entity, if configured. */
   readonly ttl: EntityTtlConfig | undefined;
+  /** Lifecycle hooks for this entity, if configured. */
+  readonly hooks: EntityHooks<StandardSchemaV1.InferOutput<S>> | undefined;
 }
 
 /**
