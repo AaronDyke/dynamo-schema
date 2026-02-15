@@ -1,12 +1,13 @@
 /**
  * Key-related types for DynamoDB partition and sort key definitions.
  *
- * Supports both template keys ("USER#{{userId}}") and simple field references ("userId").
+ * Supports template keys ("USER#{{userId}}") and static literals ("PROFILE").
+ * Field references must always use `{{field}}` syntax.
  */
 
 /**
  * A key definition is either a template string with `{{field}}` placeholders,
- * or a simple field name that maps directly to a schema field.
+ * or a static literal value (e.g. `"PROFILE"`).
  */
 export type KeyDefinition = string;
 
@@ -32,8 +33,8 @@ export interface KeySchema {
  * type Fields = ExtractTemplateFields<"USER#{{userId}}#{{role}}">;
  * //   ^? "userId" | "role"
  *
- * type Simple = ExtractTemplateFields<"userId">;
- * //   ^? "userId"
+ * type Static = ExtractTemplateFields<"PROFILE">;
+ * //   ^? never
  * ```
  */
 export type ExtractTemplateFields<T extends string> =
@@ -41,7 +42,7 @@ export type ExtractTemplateFields<T extends string> =
     ? Field | ExtractTemplateFields<Rest>
     : T extends `${string}{{${infer Field}}}`
       ? Field
-      : T; // Simple field reference (no template syntax)
+      : never; // Static literal (no template syntax)
 
 /**
  * Checks whether a key definition is a template (contains `{{...}}`).

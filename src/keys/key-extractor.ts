@@ -31,13 +31,8 @@ export const extractFieldsFromKey = (
 ): Result<Readonly<Record<string, string>>, Error> => {
   const fields: Record<string, string> = {};
 
-  // Simple case: the entire key value maps to a single field
+  // Static literal case: no fields to extract (e.g. "PROFILE")
   if (template.isSimple) {
-    const fieldName = template.fields[0];
-    if (fieldName === undefined) {
-      return err(new Error("Template has no fields"));
-    }
-    fields[fieldName] = keyValue;
     return ok(Object.freeze(fields));
   }
 

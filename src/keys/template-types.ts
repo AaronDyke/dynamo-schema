@@ -28,11 +28,11 @@ export type HasTemplate<T extends string> =
 /**
  * Resolves the fields required to build a key value.
  *
- * - For template keys: extracts all `{{field}}` names
- * - For simple keys: the key string itself is the field name
+ * - For template keys (containing `{{field}}`): extracts all field names
+ * - For static keys (no placeholders, e.g. `"PROFILE"`): no fields required
  */
 export type ResolveKeyFields<T extends string> =
-  HasTemplate<T> extends true ? ParseTemplateFields<T> : T;
+  HasTemplate<T> extends true ? ParseTemplateFields<T> : never;
 
 /**
  * Validates that all fields required by a key template exist in the

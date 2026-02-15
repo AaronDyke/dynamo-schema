@@ -32,7 +32,7 @@ const TEMPLATE_REGEX = /\{\{(\w+)\}\}/g;
  * Parses a key definition string into segments and field references.
  *
  * @param definition - A template string (e.g. `"USER#{{userId}}"`) or a
- *   simple field name (e.g. `"userId"`).
+ *   static literal value (e.g. `"PROFILE"`).
  * @returns A frozen {@link ParsedTemplate} object.
  *
  * @example
@@ -41,9 +41,9 @@ const TEMPLATE_REGEX = /\{\{(\w+)\}\}/g;
  * // => { segments: [{ type: "literal", value: "USER#" }, { type: "field", name: "userId" }],
  * //      fields: ["userId"], isSimple: false }
  *
- * parseTemplate("userId")
- * // => { segments: [{ type: "field", name: "userId" }],
- * //      fields: ["userId"], isSimple: true }
+ * parseTemplate("PROFILE")
+ * // => { segments: [{ type: "literal", value: "PROFILE" }],
+ * //      fields: [], isSimple: true }
  * ```
  */
 export const parseTemplate = (definition: string): ParsedTemplate => {
@@ -74,13 +74,13 @@ export const parseTemplate = (definition: string): ParsedTemplate => {
     lastIndex = match.index + match[0].length;
   }
 
-  // If no template placeholders were found, treat the whole string as a simple field reference
+  // If no template placeholders were found, treat the whole string as a static literal value
   if (fields.length === 0) {
     return Object.freeze({
       segments: Object.freeze([
-        Object.freeze({ type: "field" as const, name: definition }),
+        Object.freeze({ type: "literal" as const, value: definition }),
       ]),
-      fields: Object.freeze([definition]),
+      fields: Object.freeze([]),
       isSimple: true,
     });
   }
