@@ -85,11 +85,34 @@ describe("executeQuery()", () => {
 
   it("passes index name when specified", async () => {
     await executeQuery(userEntity, adapter, {
-      partitionKey: { userId: "user-123" },
+      partitionKey: { email: "alice@example.com" },
       options: { indexName: "GSI1" },
     });
     const call = vi.mocked(adapter.query).mock.calls[0]?.[0];
     expect(call?.indexName).toBe("GSI1");
+  });
+
+  it("uses GSI partition key attribute and template when querying by index", async () => {
+    await executeQuery(userEntity, adapter, {
+      partitionKey: { email: "alice@example.com" },
+      options: { indexName: "GSI1" },
+    });
+    const call = vi.mocked(adapter.query).mock.calls[0]?.[0];
+    // The expression attribute name for #pk must map to the GSI's attr, not the base table's
+    expect(call?.expressionAttributeNames?.["#pk"]).toBe("gsi1pk");
+    // The pk value must be built from the GSI template USER_EMAIL#{{email}}
+    expect(call?.expressionAttributeValues?.[":pk"]).toBe("USER_EMAIL#alice@example.com");
+  });
+
+  it("returns a key error when indexName is not defined on the table", async () => {
+    const result = await executeQuery(userEntity, adapter, {
+      partitionKey: { userId: "user-123" },
+      options: { indexName: "NONEXISTENT" },
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.type).toBe("key");
+    }
   });
 
   it("passes filter expression when specified", async () => {

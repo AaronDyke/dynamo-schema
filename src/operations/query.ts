@@ -4,6 +4,7 @@
 
 import type { StandardSchemaV1 } from "../standard-schema/types.js";
 import type { EntityDefinition } from "../types/entity.js";
+import type { IndexDefinition } from "../types/table.js";
 import type { SDKAdapter } from "../adapters/adapter.js";
 import type { QueryOptions, QueryResult, DynamoError } from "../types/operations.js";
 import { type Result, ok, err } from "../types/common.js";
@@ -44,7 +45,8 @@ export interface EntityQueryInput {
  * Builds a key condition expression from partition key and optional sort key condition.
  */
 const buildKeyConditionExpression = (
-  entity: EntityDefinition,
+  pkAttrName: string,
+  skAttrName: string | undefined,
   pkValue: string,
   sortKeyCondition: SortKeyCondition | undefined,
 ): {
@@ -56,7 +58,6 @@ const buildKeyConditionExpression = (
   const values: Record<string, unknown> = {};
 
   // Partition key condition
-  const pkAttrName = entity.table.partitionKey.name;
   const pkAlias = aliasAttributeName("pk");
   const pkValueAlias = valuePlaceholder("pk");
   names[pkAlias] = pkAttrName;
@@ -65,8 +66,7 @@ const buildKeyConditionExpression = (
   let expression = `${pkAlias} = ${pkValueAlias}`;
 
   // Sort key condition (if provided)
-  if (sortKeyCondition && entity.table.sortKey) {
-    const skAttrName = entity.table.sortKey.name;
+  if (sortKeyCondition && skAttrName) {
     const skAlias = aliasAttributeName("sk");
     names[skAlias] = skAttrName;
 
@@ -107,6 +107,63 @@ const buildKeyConditionExpression = (
 };
 
 /**
+ * Resolves the partition key template, pk attribute name, and sk attribute name to use
+ * for a query — accounting for GSI/LSI when an indexName is provided.
+ */
+const resolveQueryKeyInfo = (
+  entity: EntityDefinition,
+  indexName: string | undefined,
+): Result<
+  { pkTemplate: string; pkAttrName: string; skAttrName: string | undefined },
+  DynamoError
+> => {
+  if (!indexName) {
+    return ok({
+      pkTemplate: entity.partitionKey,
+      pkAttrName: entity.table.partitionKey.name,
+      skAttrName: entity.table.sortKey?.name,
+    });
+  }
+
+  // Find the table-level index definition by its DynamoDB indexName
+  const tableIndexes = entity.table.indexes as Record<string, IndexDefinition>;
+  const indexKey = Object.keys(tableIndexes).find(
+    (k) => (tableIndexes[k] as IndexDefinition | undefined)?.indexName === indexName,
+  );
+  const tableIndex: IndexDefinition | undefined = indexKey ? tableIndexes[indexKey] : undefined;
+
+  if (!indexKey || !tableIndex) {
+    return err(
+      createDynamoError(
+        "key",
+        `Index "${indexName}" is not defined on table "${entity.table.tableName}"`,
+      ),
+    );
+  }
+
+  const pkAttrName = tableIndex.partitionKey.name;
+  const skAttrName = tableIndex.sortKey?.name;
+
+  // Find the entity-level key template override for this index
+  const entityIndexes = entity.indexes as
+    | Record<string, { partitionKey: string; sortKey?: string }>
+    | undefined;
+  const entityIndex = entityIndexes?.[indexKey];
+
+  if (!entityIndex) {
+    return err(
+      createDynamoError(
+        "key",
+        `No key template defined on entity "${entity.name}" for index "${indexName}". ` +
+          `Add an entry for "${indexKey}" in the entity's indexes config.`,
+      ),
+    );
+  }
+
+  return ok({ pkTemplate: entityIndex.partitionKey, pkAttrName, skAttrName });
+};
+
+/**
  * Executes a Query operation for the given entity.
  *
  * @param entity - The entity definition
@@ -123,21 +180,29 @@ export const executeQuery = async <
 ): Promise<Result<QueryResult<StandardSchemaV1.InferOutput<S>>, DynamoError>> => {
   const options = input.options;
 
-  // 1. Build partition key value from template and input
-  const pkTemplate = parseTemplate(entity.partitionKey);
-  const pkResult = buildKeyValue(pkTemplate, input.partitionKey);
+  // 1. Resolve which key template and attribute names to use (base table vs. index)
+  const keyInfoResult = resolveQueryKeyInfo(entity, options?.indexName);
+  if (!keyInfoResult.success) {
+    return err(keyInfoResult.error);
+  }
+  const { pkTemplate, pkAttrName, skAttrName } = keyInfoResult.data;
+
+  // 2. Build partition key value from template and input
+  const pkTemplateParsed = parseTemplate(pkTemplate);
+  const pkResult = buildKeyValue(pkTemplateParsed, input.partitionKey);
   if (!pkResult.success) {
     return err(createDynamoError("key", pkResult.error.message, pkResult.error));
   }
 
-  // 2. Build key condition expression
+  // 3. Build key condition expression
   const keyCondition = buildKeyConditionExpression(
-    entity,
+    pkAttrName,
+    skAttrName,
     pkResult.data,
     input.sortKeyCondition,
   );
 
-  // 3. Build projection expression
+  // 4. Build projection expression
   let projectionExpression: string | undefined;
   const projNames: Record<string, string> = {};
   if (options?.projection && options.projection.length > 0) {
@@ -150,10 +215,10 @@ export const executeQuery = async <
     projectionExpression = projParts.join(", ");
   }
 
-  // 4. Resolve filter expression (string, FilterNode, or callback)
+  // 5. Resolve filter expression (string, FilterNode, or callback)
   const resolvedFilter = resolveFilterInput(options?.filter);
 
-  // 5. Merge all expression attribute names and values
+  // 6. Merge all expression attribute names and values
   const mergedNames: Record<string, string> = {
     ...keyCondition.names,
     ...projNames,
@@ -167,7 +232,7 @@ export const executeQuery = async <
     ...options?.expressionValues,
   };
 
-  // 6. Marshall values if using raw adapter
+  // 7. Marshall values if using raw adapter
   let marshalledValues: Record<string, unknown> = mergedValues;
   let startKey = options?.startKey;
 
@@ -195,7 +260,7 @@ export const executeQuery = async <
     }
   }
 
-  // 7. Call adapter
+  // 8. Call adapter
   let result;
   try {
     result = await adapter.query({
@@ -223,7 +288,7 @@ export const executeQuery = async <
     );
   }
 
-  // 8. Unmarshall items if using raw adapter
+  // 9. Unmarshall items if using raw adapter
   const items: Array<StandardSchemaV1.InferOutput<S>> = [];
   for (const rawItem of result.items) {
     if (adapter.isRaw) {
