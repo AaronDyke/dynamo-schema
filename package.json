@@ -1,6 +1,6 @@
 {
-  "name": "dynamo-schema",
-  "version": "0.0.0",
+  "name": "@aaron_dyke/dynamo-schema",
+  "version": "1.0.0",
   "description": "Type-safe DynamoDB schema validation and modeling library for TypeScript",
   "type": "module",
   "main": "./dist/index.js",
