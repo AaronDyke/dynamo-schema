@@ -4,7 +4,7 @@ Known edge cases, surprising behaviours and boundary conditions in the library, 
 
 - **Verified against:** commit `9899d04` (1.0.0 release)
 - **Last verified:** 2026-10-12
-- **Keep it current:** when a fix lands, move its entry to [Resolved](#resolved) and record the PR. When you add an entry, include a reproduction, and add an `it.todo` (or a failing test) that the fix will turn green.
+- **Keep it current:** when a fix lands, move its entry to [Resolved](#resolved) and record the PR. When you add an entry, include a reproduction, and add an `it.todo` (or a failing test) to `src/__tests__/edge-cases.test.ts` under a `describe` named after the entry ID; the fix turns it into a real test.
 
 ## Severity rubric
 
@@ -67,7 +67,7 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [EXP-4](#exp-4-needsalias-ignores-names-starting-with-a-digit) | `needsAlias` ignores names starting with a digit | Low |
 | [PUT-3](#put-3-put-returns-the-locally-built-item) | `put` returns the locally built item, including key attributes | Low |
 
-None of the open entries has a regression test yet.
+High-severity entries have pending `it.todo` tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. Medium and Low entries have no regression tests yet.
 
 ---
 
