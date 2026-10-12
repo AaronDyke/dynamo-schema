@@ -57,7 +57,7 @@ export type { RetryOptions } from "./utils/retry.js";
 
 // Transaction operation types
 export type { TransactPutRequest, TransactDeleteRequest, TransactUpdateRequest, TransactConditionCheckRequest, TransactWriteRequestItem, TransactWriteOptions } from "./operations/transact-write.js";
-export type { TransactGetEntityRequest, TransactGetResult } from "./operations/transact-get.js";
+export type { TransactGetEntityRequest, TransactGetResult, TransactGetOptions } from "./operations/transact-get.js";
 
 // Result type and helpers
 export { type Result, ok, err, mapResult, flatMapResult } from "./types/common.js";

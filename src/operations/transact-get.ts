@@ -16,12 +16,23 @@ import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
 import { buildProjection } from "../utils/expression-names.js";
+import { runHook } from "../utils/run-hook.js";
 
 /** A single transact get request for an entity. */
 export interface TransactGetEntityRequest<S extends StandardSchemaV1 = StandardSchemaV1> {
   readonly entity: EntityDefinition<S>;
   readonly keyInput: Readonly<Record<string, string>>;
   readonly projection?: readonly string[] | undefined;
+}
+
+/** Options for transact get. */
+export interface TransactGetOptions {
+  /**
+   * When `true`, entity `afterGet` hooks are bypassed. Otherwise each
+   * request's entity `afterGet` runs on its result, including `undefined`
+   * for an item that wasn't found (as in `get`). Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Result of a transact get, items in the same order as requests. */
@@ -64,6 +75,7 @@ const buildKey = (
 export const executeTransactGet = async (
   adapter: SDKAdapter,
   requests: readonly TransactGetEntityRequest[],
+  options?: TransactGetOptions,
 ): Promise<Result<TransactGetResult, DynamoError>> => {
   const transactItems: TransactGetItem[] = [];
 
@@ -128,6 +140,19 @@ export const executeTransactGet = async (
       items.push(unmarshalled.data);
     } else {
       items.push(rawItem as Record<string, unknown>);
+    }
+  }
+
+  // Run each request's afterGet hook on its result, keeping positions (unless skipped)
+  if (!options?.skipHooks) {
+    for (const [i, req] of requests.entries()) {
+      const hooks = req.entity.hooks;
+      if (!hooks?.afterGet) continue;
+      const hooked = await runHook("afterGet", () =>
+        hooks.afterGet!(items[i]) as Record<string, unknown> | undefined,
+      );
+      if (!hooked.success) return err(hooked.error);
+      items[i] = hooked.data;
     }
   }
 

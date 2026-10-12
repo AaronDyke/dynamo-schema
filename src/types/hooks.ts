@@ -12,8 +12,10 @@ import type { UpdateActions } from "./update-expression.js";
  * access control. All hooks can be synchronous or asynchronous. Throwing from
  * a hook aborts the operation and surfaces a `DynamoError` with `type: "hook"`.
  *
- * Hooks are opt-in per entity and are **run by default**. Pass `skipHooks: true`
- * in any operation's options to bypass all hooks for that call.
+ * Hooks are opt-in per entity and are **run by default** by every operation
+ * that reads or writes the entity, including batch and transaction operations.
+ * Pass `skipHooks: true` in any operation's options to bypass all hooks for
+ * that call.
  *
  * Method shorthand syntax is used intentionally: TypeScript's `--strictFunctionTypes`
  * check does not apply to interface method declarations, making
@@ -84,6 +86,8 @@ export interface EntityHooks<T> {
 
   /**
    * Called after a get operation, once the item is retrieved and unmarshalled.
+   * Also called for each item returned by `query`, `scan`, `batchGet` and
+   * `transactGet`; in lists, an item mapped to `undefined` is left out.
    *
    * Can transform the result, provide a default value when the item is not
    * found (`item` is `undefined`), or perform additional lookups.

@@ -16,6 +16,7 @@ import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
+import { runHook } from "../utils/run-hook.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { createUpdateBuilder, compileUpdateActions } from "./update.js";
 import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
@@ -73,6 +74,12 @@ export type TransactWriteRequestItem =
 /** Options for transact write. */
 export interface TransactWriteOptions {
   readonly skipValidation?: boolean | undefined;
+  /**
+   * When `true`, entity hooks are bypassed. Otherwise `beforePut`,
+   * `beforeUpdate` and `beforeDelete` run for the matching requests, all
+   * before the transaction is sent. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /**
@@ -155,10 +162,15 @@ export const executeTransactWrite = async (
           }
         }
 
-        const itemResult = buildItemWithKeys(
-          req.entity,
-          req.data as Record<string, unknown>,
-        );
+        let data = req.data as Record<string, unknown>;
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforePut) {
+          const hooked = await runHook("beforePut", () => hooks.beforePut!(data));
+          if (!hooked.success) return err(hooked.error);
+          data = hooked.data as Record<string, unknown>;
+        }
+
+        const itemResult = buildItemWithKeys(req.entity, data);
         if (!itemResult.success) {
           return err(createDynamoError("key", itemResult.error.message, itemResult.error));
         }
@@ -196,6 +208,12 @@ export const executeTransactWrite = async (
       }
 
       case "delete": {
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforeDelete) {
+          const hooked = await runHook("beforeDelete", () => hooks.beforeDelete!(req.keyInput));
+          if (!hooked.success) return err(hooked.error);
+        }
+
         const keyResult = buildKey(req.entity, req.keyInput);
         if (!keyResult.success) {
           return err(createDynamoError("key", keyResult.error.message, keyResult.error));
@@ -242,7 +260,14 @@ export const executeTransactWrite = async (
         // Build update expression
         const builder = createUpdateBuilder<unknown>();
         const configured = req.builderFn(builder as unknown as UpdateBuilder<StandardSchemaV1.InferOutput<StandardSchemaV1>>);
-        const actions = configured.build();
+        let actions = configured.build();
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforeUpdate) {
+          const current = actions;
+          const hooked = await runHook("beforeUpdate", () => hooks.beforeUpdate!(req.keyInput, current));
+          if (!hooked.success) return err(hooked.error);
+          actions = hooked.data;
+        }
         const compiled = compileUpdateActions(actions);
 
         const mergedNamesResult = mergeExpressionMaps(

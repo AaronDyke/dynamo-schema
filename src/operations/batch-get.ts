@@ -21,6 +21,7 @@ import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
 import { buildProjection } from "../utils/expression-names.js";
+import { runAfterGetOnList } from "../utils/run-hook.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchGetItem request. */
@@ -46,6 +47,12 @@ export interface BatchGetOptions {
    * (1 initial attempt + up to 3 retries at 100ms, 200ms, 400ms).
    */
   readonly retryOptions?: RetryOptions | undefined;
+  /**
+   * When `true`, entity `afterGet` hooks are bypassed. Otherwise each entity's
+   * `afterGet` runs on each of its items, and items it maps to `undefined` are
+   * left out. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Result for a batch get, keyed by entity name. */
@@ -388,6 +395,21 @@ export const executeBatchGet = async (
             `Consider increasing retryOptions.maxAttempts or checking for persistent throttling.`,
         ),
       );
+    }
+  }
+
+  // Run each entity's afterGet hook on its items (unless skipped)
+  if (!options?.skipHooks) {
+    for (const [name, entity] of entitiesByName) {
+      const hooks = entity.hooks;
+      if (!hooks?.afterGet) continue;
+      const hooked = await runAfterGetOnList(
+        (item: Record<string, unknown> | undefined) =>
+          hooks.afterGet!(item) as Record<string, unknown> | undefined,
+        allResponses[name] ?? [],
+      );
+      if (!hooked.success) return err(hooked.error);
+      allResponses[name] = hooked.data;
     }
   }
 

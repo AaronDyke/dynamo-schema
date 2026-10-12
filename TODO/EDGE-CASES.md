@@ -3,7 +3,7 @@
 Known edge cases, surprising behaviours and boundary conditions in the library, with the fix for each.
 
 - **Verified against:** commit `9899d04` (1.0.0 release)
-- **Last verified:** 2026-10-12
+- **Last verified:** 2026-10-12 (High entries re-checked after their fixes in PR #1)
 - **Keep it current:** when a fix lands, move its entry to [Resolved](#resolved) and record the PR. When you add an entry, include a reproduction, and add an `it.todo` (or a failing test) to `src/__tests__/edge-cases.test.ts` under a `describe` named after the entry ID; the fix turns it into a real test.
 
 ## Severity rubric
@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [HOOK-1](#hook-1-hooks-are-bypassed-by-batch-transaction-query-and-scan) | Hooks are bypassed by batch, transaction, query and scan | **High** |
 | [UPD-1](#upd-1-overlapping-paths-in-one-update) | Overlapping paths in one update are only rejected by AWS | Medium |
 | [UPD-2](#upd-2-add--delete-accept-any-value-type) | `add` / `delete` accept any value type | Medium |
 | [UPD-3](#upd-3-update-values-are-never-schema-validated) | Update values are never schema-validated | Medium |
@@ -56,7 +55,7 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [EXP-4](#exp-4-needsalias-ignores-names-starting-with-a-digit) | `needsAlias` ignores names starting with a digit | Low |
 | [PUT-3](#put-3-put-returns-the-locally-built-item) | `put` returns the locally built item, including key attributes | Low |
 
-Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. Medium and Low entries have no regression tests yet.
+No High-severity entries are open; every resolved High entry has regression tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. The open Medium and Low entries have no regression tests yet.
 
 ---
 
@@ -310,13 +309,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 
 ## Hooks & validation
 
-### HOOK-1. Hooks are bypassed by batch, transaction, query and scan
-**Severity:** High · **Where:** hooks run only in `put.ts`, `get.ts`, `update.ts` and `delete.ts`
-
-**Behaviour:** `beforePut`, `beforeUpdate` and `beforeDelete` don't run for `batchWrite` or `transactWrite`, and `afterGet` doesn't run for `batchGet`, `transactGet`, `query` or `scan`. Invariants enforced in hooks (`updatedAt` stamping, auditing, redaction) silently fail to apply.
-
-**Fix:** Run hooks in every operation (with the same `skipHooks` opt-out). If that isn't done, document exactly which operations run hooks.
-
 ### HOOK-2. `beforePut` output is not re-validated
 **Severity:** Medium · **Where:** `executePut`
 
@@ -353,6 +345,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | BAT-5 | BatchGet projections didn't include key attributes, so returned items couldn't be matched to requests. | Fixed with BAT-1: BatchGet projections always add the table's key attributes (and trim them back off for the caller). |
 | BAT-2 | When a later BatchWrite chunk failed, or items stayed unprocessed after retries, earlier chunks were already written but the error didn't say which requests were or weren't. | `executeBatchWrite` now fails with a `BatchWriteError` whose `unprocessed` lists every request not confirmed written, in the caller's order (DynamoDB's `UnprocessedItems` are matched back by key). Requests are chunked in the caller's order. Covered by the BAT-2 tests. |
 | BAT-3 | `BatchGetResult.responses` is keyed by entity name, so two different entities sharing a name had their results merged. | `executeBatchGet` returns a `"validation"` error before sending anything when two different entities share a name; the same entity in several requests is still allowed. Covered by the BAT-3 tests. |
+| HOOK-1 | Hooks only ran in `put`, `get`, `update` and `delete`; batch, transaction, query and scan operations silently skipped them. | `batchWrite` and `transactWrite` run `beforePut`/`beforeUpdate`/`beforeDelete` before sending anything; `query`, `scan`, `batchGet` and `transactGet` run `afterGet` (list items mapped to `undefined` are dropped). All accept `skipHooks`. Shared `runHook` helper keeps error messages identical. Covered by the HOOK-1 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

@@ -15,6 +15,7 @@ import { buildProjection } from "../utils/expression-names.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
 import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
+import { runAfterGetOnList } from "../utils/run-hook.js";
 
 /**
  * Executes a Scan operation for the given entity.
@@ -132,10 +133,20 @@ export const executeScan = async <
     }
   }
 
+  // Run afterGet on each item (unless skipped); items mapped to undefined are dropped
+  const hooks = entity.hooks;
+  const hooked = await runAfterGetOnList(
+    !options?.skipHooks && hooks?.afterGet
+      ? (item: StandardSchemaV1.InferOutput<S> | undefined) => hooks.afterGet!(item)
+      : undefined,
+    items,
+  );
+  if (!hooked.success) return err(hooked.error);
+
   return ok(
     Object.freeze({
-      items: Object.freeze(items),
-      count: result.count,
+      items: Object.freeze(hooked.data),
+      count: hooked.data.length,
       lastKey: result.lastEvaluatedKey,
     }),
   );

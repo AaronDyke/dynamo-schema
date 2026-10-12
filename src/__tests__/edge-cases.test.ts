@@ -862,8 +862,166 @@ describe("BAT-3: entity name collisions in BatchGetResult", () => {
 });
 
 describe("HOOK-1: hooks bypassed by batch, transaction, query and scan", () => {
-  it.todo("batchWrite runs beforePut for put requests and beforeDelete for delete requests");
-  it.todo("transactWrite runs beforePut, beforeUpdate and beforeDelete");
-  it.todo("batchGet, transactGet, query and scan run afterGet on each item");
-  it.todo("skipHooks disables hooks in all of the above");
+  const makeHookedEntity = () => {
+    const beforeDelete = vi.fn();
+    const entity = defineEntity({
+      name: "HookedUser",
+      schema: userSchema,
+      table: usersTable,
+      partitionKey: "USER#{{userId}}",
+      sortKey: "PROFILE",
+      hooks: {
+        beforePut: (item) => ({ ...item, name: "FROM-HOOK" }),
+        beforeUpdate: (_key, actions) => ({
+          ...actions,
+          sets: [...actions.sets, { path: "updatedBy", value: "hook" }],
+        }),
+        // Soft-delete style: hide users whose name is "hidden"; tag the rest.
+        afterGet: (item) =>
+          item === undefined
+            ? undefined
+            : item.name === "hidden"
+              ? undefined
+              : { ...item, name: `${item.name}!` },
+        beforeDelete,
+      },
+    });
+    return { entity, beforeDelete };
+  };
+  const visible = { ...validUser, userId: "u1", name: "Ann", pk: "USER#u1", sk: "PROFILE" };
+  const hidden = { ...validUser, userId: "u2", name: "hidden", pk: "USER#u2", sk: "PROFILE" };
+
+  it("batchWrite runs beforePut for put requests and beforeDelete for delete requests", async () => {
+    const { entity, beforeDelete } = makeHookedEntity();
+    const adapter = createMockAdapter();
+
+    const result = await executeBatchWrite(adapter, [
+      { type: "put", entity, data: validUser } as BatchWriteRequestItem,
+      { type: "delete", entity, keyInput: { userId: "gone" } } as BatchWriteRequestItem,
+    ]);
+
+    expect(result.success).toBe(true);
+    const sent = vi.mocked(adapter.batchWriteItem).mock.calls[0]![0][0]!.requests;
+    expect(sent[0]).toMatchObject({ type: "put", item: { name: "FROM-HOOK" } });
+    expect(beforeDelete).toHaveBeenCalledWith({ userId: "gone" });
+  });
+
+  it("a throwing hook in batchWrite aborts before anything is sent", async () => {
+    const { entity, beforeDelete } = makeHookedEntity();
+    beforeDelete.mockImplementation(() => {
+      throw new Error("soft-delete only");
+    });
+    const adapter = createMockAdapter();
+    const requests = [
+      { type: "put", entity, data: validUser } as BatchWriteRequestItem,
+      { type: "delete", entity, keyInput: { userId: "gone" } } as BatchWriteRequestItem,
+    ];
+
+    const result = await executeBatchWrite(adapter, requests);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error).toMatchObject({ type: "hook", message: "beforeDelete hook failed: soft-delete only" });
+      expect(result.error.unprocessed).toEqual(requests);
+    }
+    expect(adapter.batchWriteItem).not.toHaveBeenCalled();
+  });
+
+  it("transactWrite runs beforePut, beforeUpdate and beforeDelete", async () => {
+    const { entity, beforeDelete } = makeHookedEntity();
+    const adapter = createMockAdapter();
+
+    const result = await executeTransactWrite(adapter, [
+      { type: "put", entity, data: validUser } as TransactWriteRequestItem,
+      {
+        type: "update",
+        entity,
+        keyInput: { userId: "u1" },
+        builderFn: (b: UpdateBuilder<User>) => b.set("name", "B"),
+      } as TransactWriteRequestItem,
+      { type: "delete", entity, keyInput: { userId: "gone" } } as TransactWriteRequestItem,
+    ]);
+
+    expect(result.success).toBe(true);
+    const [put, update] = vi.mocked(adapter.transactWriteItems).mock.calls[0]![0];
+    expect(put).toMatchObject({ item: { name: "FROM-HOOK" } });
+    expect(update).toMatchObject({
+      updateExpression: "SET #u0 = :u0, #u1 = :u1",
+      expressionAttributeNames: { "#u0": "name", "#u1": "updatedBy" },
+    });
+    expect(beforeDelete).toHaveBeenCalledWith({ userId: "gone" });
+  });
+
+  it("batchGet, transactGet, query and scan run afterGet on each item", async () => {
+    const { entity } = makeHookedEntity();
+    const adapter = createMockAdapter();
+    vi.mocked(adapter.query).mockResolvedValue({ items: [visible, hidden], count: 2 });
+    vi.mocked(adapter.scan).mockResolvedValue({ items: [visible, hidden], count: 2 });
+    vi.mocked(adapter.batchGetItem).mockResolvedValue({
+      responses: { UsersTable: [visible, hidden] },
+      unprocessedKeys: [],
+    });
+    vi.mocked(adapter.transactGetItems).mockResolvedValue({ items: [visible, undefined] });
+
+    const query = await executeQuery(entity, adapter, { partitionKey: { userId: "u1" } });
+    const scan = await executeScan(entity, adapter);
+    const batch = await executeBatchGet(adapter, [
+      { entity, keys: [{ userId: "u1" }, { userId: "u2" }] },
+    ]);
+    const transact = await executeTransactGet(adapter, [
+      { entity, keyInput: { userId: "u1" } },
+      { entity, keyInput: { userId: "missing" } },
+    ]);
+
+    // Lists: hidden items are dropped, the rest are transformed.
+    expect(query).toMatchObject({ success: true, data: { items: [{ name: "Ann!" }], count: 1 } });
+    expect(scan).toMatchObject({ success: true, data: { items: [{ name: "Ann!" }], count: 1 } });
+    expect(batch).toMatchObject({ success: true, data: { responses: { HookedUser: [{ name: "Ann!" }] } } });
+    // transactGet keeps positions, as get does.
+    expect(transact).toMatchObject({ success: true, data: { items: [{ name: "Ann!" }, undefined] } });
+  });
+
+  it("skipHooks disables hooks in all of the above", async () => {
+    const { entity, beforeDelete } = makeHookedEntity();
+    const adapter = createMockAdapter();
+    vi.mocked(adapter.query).mockResolvedValue({ items: [hidden], count: 1 });
+    vi.mocked(adapter.scan).mockResolvedValue({ items: [hidden], count: 1 });
+    vi.mocked(adapter.batchGetItem).mockResolvedValue({
+      responses: { UsersTable: [hidden] },
+      unprocessedKeys: [],
+    });
+    vi.mocked(adapter.transactGetItems).mockResolvedValue({ items: [hidden] });
+    const skip = { skipHooks: true };
+
+    await executeBatchWrite(
+      adapter,
+      [
+        { type: "put", entity, data: validUser } as BatchWriteRequestItem,
+        { type: "delete", entity, keyInput: { userId: "gone" } } as BatchWriteRequestItem,
+      ],
+      skip,
+    );
+    await executeTransactWrite(
+      adapter,
+      [
+        { type: "put", entity, data: validUser } as TransactWriteRequestItem,
+        { type: "delete", entity, keyInput: { userId: "gone" } } as TransactWriteRequestItem,
+      ],
+      skip,
+    );
+    const query = await executeQuery(entity, adapter, { partitionKey: { userId: "u2" }, options: skip });
+    const scan = await executeScan(entity, adapter, skip);
+    const batch = await executeBatchGet(adapter, [{ entity, keys: [{ userId: "u2" }] }], skip);
+    const transact = await executeTransactGet(adapter, [{ entity, keyInput: { userId: "u2" } }], skip);
+
+    expect(beforeDelete).not.toHaveBeenCalled();
+    const batchPut = vi.mocked(adapter.batchWriteItem).mock.calls[0]![0][0]!.requests[0]!;
+    const transactPut = vi.mocked(adapter.transactWriteItems).mock.calls[0]![0][0]!;
+    expect(batchPut).toMatchObject({ item: { name: validUser.name } });
+    expect(transactPut).toMatchObject({ item: { name: validUser.name } });
+    expect(query).toMatchObject({ data: { items: [{ name: "hidden" }] } });
+    expect(scan).toMatchObject({ data: { items: [{ name: "hidden" }] } });
+    expect(batch).toMatchObject({ data: { responses: { HookedUser: [{ name: "hidden" }] } } });
+    expect(transact).toMatchObject({ data: { items: [{ name: "hidden" }] } });
+  });
 });

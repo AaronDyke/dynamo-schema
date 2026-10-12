@@ -20,6 +20,7 @@ import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
+import { runHook } from "../utils/run-hook.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchWriteItem request. */
@@ -45,6 +46,12 @@ export type BatchWriteRequestItem = BatchPutRequest | BatchDeleteRequest;
 /** Options for batch write. */
 export interface BatchWriteOptions {
   readonly skipValidation?: boolean | undefined;
+  /**
+   * When `true`, entity hooks are bypassed. Otherwise `beforePut` runs for put
+   * requests and `beforeDelete` for delete requests, all before anything is
+   * sent. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
   /**
    * Retry options for handling DynamoDB's `UnprocessedItems` responses.
    *
@@ -208,10 +215,15 @@ export const executeBatchWrite = async (
         }
       }
 
-      const itemResult = buildItemWithKeys(
-        req.entity,
-        req.data as Record<string, unknown>,
-      );
+      let data = req.data as Record<string, unknown>;
+      const hooks = req.entity.hooks;
+      if (!options?.skipHooks && hooks?.beforePut) {
+        const hooked = await runHook("beforePut", () => hooks.beforePut!(data));
+        if (!hooked.success) return fail(hooked.error, allIndexes);
+        data = hooked.data as Record<string, unknown>;
+      }
+
+      const itemResult = buildItemWithKeys(req.entity, data);
       if (!itemResult.success) {
         return fail(
           createDynamoError("key", itemResult.error.message, itemResult.error),
@@ -238,6 +250,12 @@ export const executeBatchWrite = async (
         request: { type: "put", item },
       });
     } else {
+      const hooks = req.entity.hooks;
+      if (!options?.skipHooks && hooks?.beforeDelete) {
+        const hooked = await runHook("beforeDelete", () => hooks.beforeDelete!(req.keyInput));
+        if (!hooked.success) return fail(hooked.error, allIndexes);
+      }
+
       const keyResult = buildKey(req.entity, req.keyInput);
       if (!keyResult.success) {
         return fail(

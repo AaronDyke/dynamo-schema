@@ -1091,12 +1091,18 @@ Hooks are defined in `defineEntity` and are **run by default** on every matching
 
 ### Available hooks
 
-| Hook | Operation | When it runs | Can abort? |
-|------|-----------|--------------|-----------|
-| `beforePut` | `put` | After schema validation, before key building | Yes — throw to abort |
-| `beforeUpdate` | `update` | After builder runs, before TTL injection | Yes — throw to abort |
-| `afterGet` | `get` | After item is fetched and unmarshalled | Yes — throw to abort |
-| `beforeDelete` | `delete` | Before the DynamoDB call | Yes — throw to abort |
+| Hook | Operations | When it runs | Can abort? |
+|------|------------|--------------|-----------|
+| `beforePut` | `put`, put requests in `batchWrite` and `transactWrite` | After schema validation, before key building | Yes — throw to abort |
+| `beforeUpdate` | `update`, update requests in `transactWrite` | After builder runs, before TTL injection | Yes — throw to abort |
+| `afterGet` | `get`, `query`, `scan`, `batchGet`, `transactGet` | After items are fetched and unmarshalled | Yes — throw to abort |
+| `beforeDelete` | `delete`, delete requests in `batchWrite` and `transactWrite` | Before the DynamoDB call | Yes — throw to abort |
+
+In `batchWrite` and `transactWrite`, every `before*` hook runs before anything is sent, so a hook that throws aborts the whole call and nothing is written.
+
+`afterGet` on lists (`query`, `scan`, `batchGet`) runs once per item. An item the hook maps to `undefined` is left out of the results, the same way `get` treats `undefined` as "not found" — useful for hiding soft-deleted items. `count` reflects the items actually returned. `transactGet` keeps one result per request and, like `get`, also calls `afterGet(undefined)` for an item that wasn't found.
+
+`skipHooks: true` is accepted by every operation's options, including `batchWrite`, `batchGet`, `transactWrite` and `transactGet` (which now takes an options argument).
 
 ### Auto-inject timestamps
 

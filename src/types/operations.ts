@@ -86,11 +86,17 @@ export interface QueryOptions {
   readonly scanIndexForward?: boolean | undefined;
   readonly consistentRead?: boolean | undefined;
   readonly projection?: readonly string[] | undefined;
+  /**
+   * When `true`, the entity's `afterGet` hook is bypassed. Otherwise it runs on
+   * each returned item, and items it maps to `undefined` are left out. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Result of a Query operation. */
 export interface QueryResult<T> {
   readonly items: readonly T[];
+  /** Number of items in `items` (after any `afterGet` hook). */
   readonly count: number;
   readonly lastKey?: AttributeMap | Record<string, unknown> | undefined;
 }
@@ -113,11 +119,17 @@ export interface ScanOptions {
   readonly startKey?: AttributeMap | Record<string, unknown> | undefined;
   readonly consistentRead?: boolean | undefined;
   readonly projection?: readonly string[] | undefined;
+  /**
+   * When `true`, the entity's `afterGet` hook is bypassed. Otherwise it runs on
+   * each returned item, and items it maps to `undefined` are left out. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Result of a Scan operation. */
 export interface ScanResult<T> {
   readonly items: readonly T[];
+  /** Number of items in `items` (after any `afterGet` hook). */
   readonly count: number;
   readonly lastKey?: AttributeMap | Record<string, unknown> | undefined;
 }
