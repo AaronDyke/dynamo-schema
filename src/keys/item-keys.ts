@@ -119,3 +119,70 @@ export const buildItemKeyAttributes = (
 
   return ok(Object.freeze(attributes));
 };
+
+/** Formats a value for an error message without throwing (e.g. on `bigint`). */
+const describe = (value: unknown): string =>
+  typeof value === "string" ? `"${value}"` : String(value);
+
+/**
+ * Builds the full item to store: the validated data, plus its table and index
+ * key attributes (see {@link buildItemKeyAttributes}), plus the entity's
+ * default TTL.
+ *
+ * - If `data` already holds a **different** value under a generated key
+ *   attribute name (for example a schema field called `pk`), an error is
+ *   returned instead of silently overwriting it. An equal value is allowed,
+ *   so an item read back with its key attributes can be written again.
+ * - The default TTL (`entity.ttl.defaultTtlSeconds`) is only filled in when
+ *   `data` has no value for the table's TTL attribute.
+ *
+ * @param entity - The entity definition
+ * @param data - The validated item data
+ * @param nowSeconds - Current Unix time in seconds, used for the default TTL
+ * @returns The item to store, or an error for a key-building failure or a
+ *   field that conflicts with a generated key attribute
+ *
+ * @example
+ * ```ts
+ * buildStoredItem(userEntity, { userId: "1", email: "a@b.c", name: "A" });
+ * // => ok({ userId: "1", ..., pk: "USER#1", sk: "PROFILE", gsi1pk: ..., expiresAt: ... })
+ * buildStoredItem(userEntity, { userId: "1", pk: "something-else", ... });
+ * // => err(Error('Item field "pk" ... conflicts with the generated key attribute ...'))
+ * ```
+ */
+export const buildStoredItem = (
+  entity: EntityDefinition,
+  data: Readonly<Record<string, unknown>>,
+  nowSeconds: number = Math.floor(Date.now() / 1000),
+): Result<Record<string, unknown>, Error> => {
+  const keyResult = buildItemKeyAttributes(entity, data);
+  if (!keyResult.success) return keyResult;
+
+  const conflict = Object.entries(keyResult.data).find(
+    ([name, value]) => !isAbsent(data[name]) && data[name] !== value,
+  );
+  if (conflict) {
+    const [name, value] = conflict;
+    return err(
+      new Error(
+        `Item field "${name}" (${describe(data[name])}) conflicts with the generated key attribute ` +
+          `of the same name (${describe(value)}). Rename the schema field or the table/index key attribute.`,
+      ),
+    );
+  }
+
+  const item: Record<string, unknown> = { ...data, ...keyResult.data };
+
+  const ttlAttributeName = entity.table.ttl?.attributeName;
+  const defaultTtlSeconds = entity.ttl?.defaultTtlSeconds;
+  if (
+    ttlAttributeName &&
+    defaultTtlSeconds !== undefined &&
+    defaultTtlSeconds > 0 &&
+    isAbsent(item[ttlAttributeName])
+  ) {
+    item[ttlAttributeName] = nowSeconds + defaultTtlSeconds;
+  }
+
+  return ok(item);
+};

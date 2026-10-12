@@ -14,7 +14,7 @@ import { createDynamoError } from "../types/operations.js";
 import { validate } from "../validation/validate.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
-import { buildItemKeyAttributes } from "../keys/item-keys.js";
+import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { createUpdateBuilder, compileUpdateActions } from "./update.js";
@@ -106,11 +106,7 @@ const buildKey = (
 const buildItemWithKeys = (
   entity: EntityDefinition,
   data: Record<string, unknown>,
-): Result<Record<string, unknown>, Error> => {
-  const keyResult = buildItemKeyAttributes(entity, data);
-  if (!keyResult.success) return keyResult;
-  return ok({ ...data, ...keyResult.data });
-};
+): Result<Record<string, unknown>, Error> => buildStoredItem(entity, data);
 
 /**
  * Marshalls expression values for raw adapters.

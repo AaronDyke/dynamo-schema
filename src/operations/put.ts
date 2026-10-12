@@ -9,7 +9,7 @@ import type { PutOptions, DynamoError } from "../types/operations.js";
 import { type Result, ok, err } from "../types/common.js";
 import { createDynamoError } from "../types/operations.js";
 import { validate } from "../validation/validate.js";
-import { buildItemKeyAttributes } from "../keys/item-keys.js";
+import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { resolveFilterInput } from "./filter.js";
@@ -64,22 +64,14 @@ export const executePut = async <
     }
   }
 
-  // 2. Build table and index key attributes (indexes are sparse)
+  // 2-4. Build the stored item: key and index attributes (indexes are sparse),
+  //      plus the default TTL when the item doesn't already carry one
   const record = itemData_ as Record<string, unknown>;
-  const keyResult = buildItemKeyAttributes(entity as EntityDefinition, record);
-  if (!keyResult.success) {
-    return err(createDynamoError("key", keyResult.error.message, keyResult.error));
+  const itemResult = buildStoredItem(entity as EntityDefinition, record);
+  if (!itemResult.success) {
+    return err(createDynamoError("key", itemResult.error.message, itemResult.error));
   }
-
-  // 3. Build the item with key attributes
-  const itemData: Record<string, unknown> = { ...record, ...keyResult.data };
-
-  // 4. Inject default TTL if configured
-  const ttlAttributeName = entity.table.ttl?.attributeName;
-  const defaultTtlSeconds = entity.ttl?.defaultTtlSeconds;
-  if (ttlAttributeName && defaultTtlSeconds !== undefined && defaultTtlSeconds > 0) {
-    itemData[ttlAttributeName] = Math.floor(Date.now() / 1000) + defaultTtlSeconds;
-  }
+  const itemData = itemResult.data;
 
   // 6. Resolve condition expression (string, FilterNode, or callback)
   const resolvedCondition = resolveFilterInput(options?.condition);

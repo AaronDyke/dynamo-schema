@@ -106,6 +106,14 @@ export const createUpdateBuilder = <T>(): UpdateBuilder<T> => {
   return makeBuilder(emptyActions);
 };
 
+/** True when any action in `actions` targets `path` (so auto-TTL must not add another). */
+const touchesPath = (actions: UpdateActions, path: string): boolean =>
+  actions.sets.some((a) => a.path === path) ||
+  actions.setIfNotExists.some((a) => a.path === path) ||
+  actions.removes.includes(path) ||
+  actions.adds.some((a) => a.path === path) ||
+  actions.deletes.some((a) => a.path === path);
+
 /**
  * Compiles UpdateActions into a DynamoDB UpdateExpression string,
  * ExpressionAttributeNames, and ExpressionAttributeValues.
@@ -274,7 +282,8 @@ export const executeUpdate = async <
     ttlAttributeName &&
     autoUpdateTtlSeconds !== undefined &&
     autoUpdateTtlSeconds > 0 &&
-    !options?.skipAutoTtl
+    !options?.skipAutoTtl &&
+    !touchesPath(actions, ttlAttributeName)
   ) {
     actionsWithTtl = Object.freeze({
       ...actions,

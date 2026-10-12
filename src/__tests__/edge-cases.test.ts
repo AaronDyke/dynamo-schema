@@ -555,9 +555,108 @@ describe("PUT-1: sparse GSIs", () => {
 });
 
 describe("PUT-2: generated attributes overwriting schema fields", () => {
-  it.todo("reports a collision when a schema field shares the partition/sort key attribute name");
-  it.todo("reports a collision when a schema field shares a GSI key attribute name");
-  it.todo("does not overwrite a caller-supplied TTL attribute value");
+  const DAY = 60 * 60 * 24;
+  // Schema fields named like the table's key, index and TTL attributes.
+  const clashing = defineEntity({
+    name: "Clashing",
+    schema: z.object({
+      userId: z.string(),
+      email: z.string(),
+      pk: z.string().optional(),
+      gsi1pk: z.string().optional(),
+      expiresAt: z.number().optional(),
+    }),
+    table: usersTable,
+    partitionKey: "USER#{{userId}}",
+    sortKey: "PROFILE",
+    indexes: { gsi1: { partitionKey: "EMAIL#{{email}}", sortKey: "USER#{{userId}}" } },
+    ttl: { defaultTtlSeconds: 30 * DAY, autoUpdateTtlSeconds: 30 * DAY },
+  });
+  const base = { userId: "u1", email: "a@b.c" };
+
+  it("reports a collision when a schema field shares the partition/sort key attribute name", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(clashing, adapter, { ...base, pk: "my-own-value" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.type).toBe("key");
+      expect(result.error.message).toContain('Item field "pk"');
+    }
+    expect(adapter.putItem).not.toHaveBeenCalled();
+  });
+
+  it("reports a collision when a schema field shares a GSI key attribute name", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(clashing, adapter, { ...base, gsi1pk: "my-own-value" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toContain('Item field "gsi1pk"');
+  });
+
+  it("allows a field that already holds the generated key value (e.g. an item read back)", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(clashing, adapter, { ...base, pk: "USER#u1" });
+
+    expect(result.success).toBe(true);
+  });
+
+  it("does not overwrite a caller-supplied TTL attribute value", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(clashing, adapter, { ...base, expiresAt: 1234 });
+
+    expect(result.success).toBe(true);
+    expect(vi.mocked(adapter.putItem).mock.calls[0]![0].item["expiresAt"]).toBe(1234);
+  });
+
+  it("still fills in the default TTL when the caller supplies none", async () => {
+    const adapter = createMockAdapter();
+    const before = Math.floor(Date.now() / 1000);
+
+    await executePut(clashing, adapter, base);
+
+    const ttl = vi.mocked(adapter.putItem).mock.calls[0]![0].item["expiresAt"] as number;
+    expect(ttl).toBeGreaterThanOrEqual(before + 30 * DAY);
+  });
+
+  it("update doesn't add an auto-TTL action when the update already sets the TTL attribute", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executeUpdate(clashing, adapter, base, (b) => b.set("expiresAt", 1234));
+
+    expect(result.success).toBe(true);
+    const call = vi.mocked(adapter.updateItem).mock.calls[0]![0];
+    expect(call.updateExpression).toBe("SET #u0 = :u0");
+    expect(call.expressionAttributeValues).toEqual({ ":u0": 1234 });
+  });
+});
+
+describe("TTL-4: batchWrite and transactWrite default TTL", () => {
+  it("put requests in batchWrite and transactWrite get the default TTL, like put", async () => {
+    const adapter = createMockAdapter();
+    const before = Math.floor(Date.now() / 1000);
+
+    await executeBatchWrite(adapter, [
+      { type: "put", entity: userEntity, data: validUser } as BatchWriteRequestItem,
+    ]);
+    await executeTransactWrite(adapter, [
+      { type: "put", entity: userEntity, data: validUser } as TransactWriteRequestItem,
+    ]);
+
+    const batchItem = vi.mocked(adapter.batchWriteItem).mock.calls[0]![0][0]!.requests[0]! as {
+      item: Record<string, unknown>;
+    };
+    const transactItem = vi.mocked(adapter.transactWriteItems).mock.calls[0]![0][0]! as {
+      item: Record<string, unknown>;
+    };
+    for (const item of [batchItem.item, transactItem.item]) {
+      expect(item["expiresAt"] as number).toBeGreaterThanOrEqual(before + 60 * 60 * 24 * 30);
+    }
+  });
 });
 
 describe("BAT-1: multiple entities on one table in BatchGet", () => {

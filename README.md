@@ -252,7 +252,7 @@ const sessionEntity = defineEntity({
   partitionKey: "SESSION#{{sessionId}}",
   sortKey: "METADATA",
   ttl: {
-    // Auto-inject this TTL value on every put (30 days from now)
+    // Auto-inject this TTL value on every put that has no TTL value (30 days from now)
     defaultTtlSeconds: 60 * 60 * 24 * 30,
     // Refresh the TTL on every update (sliding expiry)
     autoUpdateTtlSeconds: 60 * 60 * 24 * 30,
@@ -263,6 +263,11 @@ const sessionEntity = defineEntity({
 Both fields are optional and independent. For example, you can set `autoUpdateTtlSeconds` without `defaultTtlSeconds` if you want sliding expiry on updates but not automatic injection on creation.
 
 The TTL value injected is always `Math.floor(Date.now() / 1000) + <seconds>` (Unix epoch seconds, as required by DynamoDB).
+
+- `defaultTtlSeconds` applies to `put` and to put requests in `batchWrite` and `transactWrite`. It is only used when the item doesn't already have a value for the TTL attribute, so an explicit expiry you pass is kept.
+- `autoUpdateTtlSeconds` is skipped when the update itself already sets or removes the TTL attribute.
+
+**Generated attributes and your schema:** the library writes the table's key attributes, the index key attributes and the TTL attribute onto each item. If your item has a field with the same name as a key or index attribute (for example a schema field called `pk`) and its value differs from the generated one, the write returns a `"key"` error instead of silently overwriting your value. A field that already holds the generated value is accepted, so an item read back with its key attributes can be written again.
 
 ### Type Inference
 

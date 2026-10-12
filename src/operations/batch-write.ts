@@ -18,7 +18,7 @@ import { createDynamoError } from "../types/operations.js";
 import { validate } from "../validation/validate.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
-import { buildItemKeyAttributes } from "../keys/item-keys.js";
+import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
@@ -63,11 +63,7 @@ export interface BatchWriteOptions {
 const buildItemWithKeys = (
   entity: EntityDefinition,
   data: Record<string, unknown>,
-): Result<Record<string, unknown>, Error> => {
-  const keyResult = buildItemKeyAttributes(entity, data);
-  if (!keyResult.success) return keyResult;
-  return ok({ ...data, ...keyResult.data });
-};
+): Result<Record<string, unknown>, Error> => buildStoredItem(entity, data);
 
 /**
  * Builds a DynamoDB key from entity key input.
