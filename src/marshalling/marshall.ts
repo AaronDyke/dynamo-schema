@@ -20,10 +20,14 @@ import type { AttributeValue, AttributeMap } from "./types.js";
  * - `Set<number>` -> `{ NS: [...] }`
  * - `Set<Uint8Array>` -> `{ BS: [...] }`
  * - `Array` -> `{ L: [...] }`
- * - Plain object -> `{ M: { ... } }`
+ * - Plain object (object literal or `Object.create(null)`) -> `{ M: { ... } }`
+ *
+ * Any other object (`Date`, `Map`, `ArrayBuffer`, class instances) is an
+ * error rather than an empty map, because its data would be silently lost.
  *
  * @param value - The JavaScript value to marshall
- * @returns A Result containing the DynamoDB AttributeValue
+ * @returns A Result containing the DynamoDB AttributeValue, or an error for
+ *   unsupported values
  */
 export const marshallValue = (
   value: unknown,
@@ -64,10 +68,38 @@ export const marshallValue = (
   }
 
   if (typeof value === "object") {
+    if (!isPlainObject(value)) {
+      return err(new Error(describeNonPlainObject(value)));
+    }
     return marshallMap(value as Record<string, unknown>);
   }
 
   return err(new Error(`Cannot marshall value of type ${typeof value}`));
+};
+
+/**
+ * True for object literals and `Object.create(null)` objects. Instances of
+ * other classes (`Date`, `Map`, `ArrayBuffer`, user classes, ...) are not
+ * plain: their data is usually not in own enumerable properties, so
+ * marshalling them as maps would silently drop it.
+ */
+const isPlainObject = (value: object): boolean => {
+  const proto: unknown = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
+
+/** Builds the error message for a non-plain object, with a hint for common types. */
+const describeNonPlainObject = (value: object): string => {
+  const name = value.constructor?.name || "object with a custom prototype";
+  const hint =
+    value instanceof Date
+      ? " Convert it first, e.g. date.toISOString() or date.getTime()."
+      : value instanceof Map
+        ? " Convert it first with Object.fromEntries(map)."
+        : value instanceof ArrayBuffer
+          ? " Wrap it in a Uint8Array first."
+          : " Convert it to a plain object, array, Set, string, number, boolean or Uint8Array first.";
+  return `Cannot marshall ${name} instance; only plain objects are marshalled as maps.${hint}`;
 };
 
 const marshallSet = (

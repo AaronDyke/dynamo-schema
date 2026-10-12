@@ -989,6 +989,15 @@ const adapter = createSDKv3Adapter(ddbClient, {
 });
 ```
 
+With the raw adapters (SDK v2 or v3), only plain objects are stored as maps. A `Date`, `Map`, `ArrayBuffer` or class instance anywhere in an item returns a `"marshalling"` error instead of being silently stored as an empty map, so convert those values first:
+
+```typescript
+await users.put({ ...user, createdAt: new Date().toISOString() }); // not new Date()
+await users.put({ ...user, settings: Object.fromEntries(settingsMap) }); // not settingsMap
+```
+
+The DocumentClient adapters pass items to the AWS SDK, which applies its own marshalling rules.
+
 ### AWS SDK v2 with DocumentClient
 
 ```typescript

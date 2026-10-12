@@ -11,6 +11,7 @@ import { z } from "zod";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { extractFieldsFromKey } from "../keys/key-extractor.js";
+import { marshallValue, marshallItem } from "../marshalling/marshall.js";
 import { defineTable } from "../core/define-table.js";
 import { defineEntity } from "../core/define-entity.js";
 import { createClient } from "../core/create-client.js";
@@ -37,6 +38,7 @@ import {
   usersTable,
   validUser,
   createMockAdapter,
+  createRawMockAdapter,
   type User,
 } from "./fixtures.js";
 
@@ -407,9 +409,56 @@ describe("KEY-1: field values containing a template delimiter", () => {
 });
 
 describe("MAR-1: non-plain objects marshalled as empty maps", () => {
-  it.todo("marshallValue returns an error for a Date");
-  it.todo("marshallValue returns an error for a Map");
-  it.todo("marshallValue returns an error for class instances and ArrayBuffer");
+  const expectError = (value: unknown, messagePart: string): void => {
+    const result = marshallValue(value);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toContain(messagePart);
+  };
+
+  it("marshallValue returns an error for a Date", () => {
+    expectError(new Date("2024-01-01"), "Cannot marshall Date instance");
+  });
+
+  it("marshallValue returns an error for a Map", () => {
+    expectError(new Map([["k", "v"]]), "Object.fromEntries");
+  });
+
+  it("marshallValue returns an error for class instances and ArrayBuffer", () => {
+    class Point {
+      constructor(readonly x: number) {}
+    }
+    expectError(new Point(1), "Cannot marshall Point instance");
+    expectError(new ArrayBuffer(4), "Uint8Array");
+  });
+
+  it("rejects a Date nested inside an item instead of storing an empty map", () => {
+    const result = marshallItem({ id: "1", meta: { createdAt: new Date() } });
+    expect(result.success).toBe(false);
+  });
+
+  it("still marshals plain objects, null-prototype objects and Uint8Array subclasses", () => {
+    const bare = Object.assign(Object.create(null) as Record<string, unknown>, { a: 1 });
+    expect(marshallValue({ a: 1 })).toEqual({ success: true, data: { M: { a: { N: "1" } } } });
+    expect(marshallValue(bare)).toEqual({ success: true, data: { M: { a: { N: "1" } } } });
+    expect(marshallValue(new Uint8Array([1]))).toMatchObject({ success: true });
+  });
+
+  it("put through a raw adapter returns a marshalling error and writes nothing", async () => {
+    const withDate = defineEntity({
+      name: "WithDate",
+      schema: z.object({ id: z.string(), createdAt: z.date() }),
+      table: usersTable,
+      partitionKey: "ITEM#{{id}}",
+      sortKey: "META",
+    });
+    const adapter = createRawMockAdapter();
+
+    const result = await executePut(withDate, adapter, { id: "1", createdAt: new Date() });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.type).toBe("marshalling");
+    expect(adapter.putItem).not.toHaveBeenCalled();
+  });
 });
 
 describe("PUT-1: sparse GSIs", () => {

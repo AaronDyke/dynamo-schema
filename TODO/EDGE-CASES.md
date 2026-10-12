@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [MAR-1](#mar-1-date-map-and-class-instances-marshal-to-an-empty-map) | `Date`, `Map` and class instances marshal to an empty map | **High** |
 | [PUT-1](#put-1-sparse-gsis-are-impossible) | Sparse GSIs are impossible: a missing index field fails the whole put | **High** |
 | [PUT-2](#put-2-key-index-and-ttl-attributes-silently-overwrite-schema-fields) | Key, index and TTL attributes silently overwrite schema fields | **High** |
 | [BAT-1](#bat-1-multiple-entities-on-one-table-are-merged-in-batchget) | BatchGet merges results and settings for entities sharing a table | **High** |
@@ -111,13 +110,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 ---
 
 ## Marshalling
-
-### MAR-1. `Date`, `Map` and class instances marshal to an empty map
-**Severity:** High · **Where:** `marshallValue` → `marshallMap` (`src/marshalling/marshall.ts`)
-
-**Behaviour:** Any non-array, non-Set object is passed to `Object.entries()`. `new Date()` and `new Map([["k", "v"]])` both become `{ M: {} }`, so **the data is discarded without error**. The same happens to `ArrayBuffer`, `URL` and most class instances.
-
-**Fix:** Marshal only plain objects (`Object.getPrototypeOf(v) === Object.prototype || null`) and return an error for everything else. Optionally, convert `Date` to an ISO string by explicit opt-in.
 
 ### MAR-2. Set element types are not checked
 **Severity:** Medium · **Where:** `marshallSet`
@@ -401,6 +393,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | EXP-2 | User `expressionNames`/`expressionValues` were spread over generated placeholders, so a matching key (for example `#u0`) silently redirected the expression to another attribute or value. | New `mergeExpressionMaps` helper, used by put, update, delete, query, scan and transactWrite updates: a conflicting key returns a `"validation"` error, and an identical duplicate is allowed. Covered by the EXP-2 tests. |
 | EXP-3 | Filter paths with dots (`"address.city"`) compiled to a single alias, so a filter meant for a nested attribute silently matched nothing, and there was no way to address nested attributes. | Filter paths now accept a tuple (`["address", "city"]`, `["tags", 0]`) that compiles to one alias per segment (`#f0_0.#f0_1`). A string path stays a single attribute name, consistent with updates and projections; the README documents both. Covered by the EXP-3 tests. |
 | KEY-1 | A field value containing the delimiter that follows it (`orgId: "a#b"` in `{{orgId}}#{{userId}}`) built an ambiguous key: two different items could share a key, and extraction split it wrongly. | `buildKeyValue` returns a `"key"` error when a field value contains the literal that follows it. Every key-building path uses it. Covered by the KEY-1 tests, including an exhaustive round-trip and uniqueness check over short strings. |
+| MAR-1 | `Date`, `Map`, `ArrayBuffer` and class instances fell through to `marshallMap` and were stored as `{ M: {} }`, silently losing their data (raw adapters). | `marshallValue` only marshals plain objects (prototype `Object.prototype` or `null`) as maps; any other object returns a `"marshalling"` error with a conversion hint. DocumentClient adapters still use the AWS SDK's own rules. Covered by the MAR-1 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)
