@@ -14,7 +14,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
+import { aliasAttributeName, buildProjection } from "../utils/expression-names.js";
 import { valuePlaceholder } from "../utils/expression-values.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
@@ -203,17 +203,7 @@ export const executeQuery = async <
   );
 
   // 4. Build projection expression
-  let projectionExpression: string | undefined;
-  const projNames: Record<string, string> = {};
-  if (options?.projection && options.projection.length > 0) {
-    const projParts: string[] = [];
-    for (const attr of options.projection) {
-      const alias = aliasAttributeName(`proj_${attr}`);
-      projNames[alias] = attr;
-      projParts.push(alias);
-    }
-    projectionExpression = projParts.join(", ");
-  }
+  const projection = buildProjection(options?.projection);
 
   // 5. Resolve filter expression (string, FilterNode, or callback)
   const resolvedFilter = resolveFilterInput(options?.filter);
@@ -221,7 +211,7 @@ export const executeQuery = async <
   // 6. Merge all expression attribute names and values
   const mergedNames: Record<string, string> = {
     ...keyCondition.names,
-    ...projNames,
+    ...projection?.names,
     ...resolvedFilter.expressionAttributeNames,
     ...options?.expressionNames,
   };
@@ -276,7 +266,7 @@ export const executeQuery = async <
       exclusiveStartKey: startKey,
       scanIndexForward: options?.scanIndexForward,
       consistentRead: options?.consistentRead,
-      projectionExpression,
+      projectionExpression: projection?.expression,
     });
   } catch (cause) {
     return err(

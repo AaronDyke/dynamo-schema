@@ -22,8 +22,8 @@ describe("executeRemoveTtl()", () => {
     await executeRemoveTtl(userEntity, adapter, { userId: "user-123" });
     const call = vi.mocked(adapter.updateItem).mock.calls[0]?.[0];
     expect(call?.updateExpression).toContain("REMOVE");
-    expect(call?.updateExpression).toContain("#r0_expiresAt");
-    expect(call?.expressionAttributeNames?.["#r0_expiresAt"]).toBe("expiresAt");
+    expect(call?.updateExpression).toBe("REMOVE #ttl");
+    expect(call?.expressionAttributeNames?.["#ttl"]).toBe("expiresAt");
   });
 
   it("calls updateItem with correct tableName and key", async () => {

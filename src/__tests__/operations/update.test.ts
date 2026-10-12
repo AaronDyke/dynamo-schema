@@ -65,14 +65,13 @@ describe("executeUpdate()", () => {
       (b) => b.set("name", "Bob"),
     );
     const call = vi.mocked(adapter.updateItem).mock.calls[0]?.[0];
+    const exprNames = call?.expressionAttributeNames ?? {};
     const exprValues = call?.expressionAttributeValues as Record<string, unknown>;
-    // One of the values should be the TTL timestamp
-    const ttlKey = Object.keys(exprValues ?? {}).find((k) =>
-      k.includes("expiresAt"),
-    );
-    expect(ttlKey).toBeDefined();
-    if (ttlKey) {
-      const ttl = exprValues[ttlKey] as number;
+    // The TTL attribute's name alias pairs with the value placeholder of the same index
+    const ttlNameAlias = Object.keys(exprNames).find((k) => exprNames[k] === "expiresAt");
+    expect(ttlNameAlias).toBeDefined();
+    if (ttlNameAlias) {
+      const ttl = exprValues[ttlNameAlias.replace("#", ":")] as number;
       expect(ttl).toBeGreaterThanOrEqual(before + 60 * 60 * 24 * 30);
     }
   });

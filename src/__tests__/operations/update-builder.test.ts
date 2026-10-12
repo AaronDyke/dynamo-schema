@@ -100,9 +100,9 @@ describe("compileUpdateActions()", () => {
     };
     const result = compileUpdateActions(actions);
     expect(result.updateExpression).toContain("SET");
-    expect(result.updateExpression).toContain("= :s0_name");
-    expect(result.expressionAttributeNames["#s0_name"]).toBe("name");
-    expect(result.expressionAttributeValues[":s0_name"]).toBe("Alice");
+    expect(result.updateExpression).toBe("SET #u0 = :u0");
+    expect(result.expressionAttributeNames["#u0"]).toBe("name");
+    expect(result.expressionAttributeValues[":u0"]).toBe("Alice");
   });
 
   it("compiles a setIfNotExists action", () => {
@@ -115,7 +115,8 @@ describe("compileUpdateActions()", () => {
     };
     const result = compileUpdateActions(actions);
     expect(result.updateExpression).toContain("if_not_exists");
-    expect(result.expressionAttributeNames["#sne0_age"]).toBe("age");
+    expect(result.updateExpression).toBe("SET #u0 = if_not_exists(#u0, :u0)");
+    expect(result.expressionAttributeNames["#u0"]).toBe("age");
   });
 
   it("compiles a REMOVE action", () => {
@@ -128,7 +129,8 @@ describe("compileUpdateActions()", () => {
     };
     const result = compileUpdateActions(actions);
     expect(result.updateExpression).toContain("REMOVE");
-    expect(result.expressionAttributeNames["#r0_oldField"]).toBe("oldField");
+    expect(result.updateExpression).toBe("REMOVE #u0");
+    expect(result.expressionAttributeNames["#u0"]).toBe("oldField");
   });
 
   it("compiles an ADD action", () => {
@@ -141,8 +143,9 @@ describe("compileUpdateActions()", () => {
     };
     const result = compileUpdateActions(actions);
     expect(result.updateExpression).toContain("ADD");
-    expect(result.expressionAttributeNames["#a0_score"]).toBe("score");
-    expect(result.expressionAttributeValues[":a0_score"]).toBe(10);
+    expect(result.updateExpression).toBe("ADD #u0 :u0");
+    expect(result.expressionAttributeNames["#u0"]).toBe("score");
+    expect(result.expressionAttributeValues[":u0"]).toBe(10);
   });
 
   it("compiles a DELETE action", () => {
@@ -156,7 +159,8 @@ describe("compileUpdateActions()", () => {
     };
     const result = compileUpdateActions(actions);
     expect(result.updateExpression).toContain("DELETE");
-    expect(result.expressionAttributeNames["#d0_tags"]).toBe("tags");
+    expect(result.updateExpression).toBe("DELETE #u0 :u0");
+    expect(result.expressionAttributeNames["#u0"]).toBe("tags");
   });
 
   it("combines multiple clauses", () => {

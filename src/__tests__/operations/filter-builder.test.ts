@@ -763,7 +763,7 @@ describe("integration: update with condition", () => {
     );
 
     const call = vi.mocked(adapter.updateItem).mock.calls[0]![0];
-    // Update expression names start with #s0_name, condition names start with #f0
+    // Update expression names are #u0, #u1, ...; condition names are #f0, #f1, ...
     expect(call.expressionAttributeNames).toHaveProperty("#f0", "status");
     expect(call.expressionAttributeValues).toHaveProperty(":f0", "active");
     expect(call.updateExpression).toContain("SET");

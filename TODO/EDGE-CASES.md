@@ -22,7 +22,7 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [EXP-1](#exp-1-attribute-names-with-non-word-characters-produce-invalid-expressions) | Attribute names containing `-`, `.`, spaces and similar produce invalid expressions | **High** |
+| [ENT-1](#ent-1-defineentity-without-a-sortkey-does-not-type-check) | `defineEntity` without a `sortKey` doesn't type-check | **High** |
 | [EXP-2](#exp-2-user-supplied-expressionnames--expressionvalues-can-overwrite-generated-aliases) | User `expressionNames`/`expressionValues` can overwrite generated aliases | **High** |
 | [EXP-3](#exp-3-filter-paths-with-dots-target-a-literal-top-level-attribute) | Filter paths with dots silently target a literal top-level attribute | **High** |
 | [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
@@ -46,13 +46,13 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [MAR-5](#mar-5-undefined-is-dropped-at-the-root-but-stored-as-null-when-nested) | `undefined` is dropped at the root but stored as `NULL` when nested | Medium |
 | [MAR-6](#mar-6-sets-containing-an-empty-string-or-empty-binary) | Sets containing `""` or an empty binary pass through | Medium |
 | [BAT-4](#bat-4-duplicate-keys-in-one-batch-are-rejected-by-aws) | Duplicate keys in a batch are only rejected by AWS | Medium |
-| [BAT-5](#bat-5-batchget-projection-uses-raw-aliases) | BatchGet projection uses raw, unsanitised aliases | Medium |
 | [QRY-1](#qry-1-sortkeycondition-silently-ignored-without-a-sort-key) | `sortKeyCondition` is silently ignored when there is no sort key | Medium |
 | [QRY-2](#qry-2-limit-and-pagination-semantics) | `limit` applies before the filter; a call returns a single page | Medium |
 | [QRY-3](#qry-3-limit-0-or-negative) | `limit` ≤ 0 is passed through to AWS | Low |
 | [QRY-4](#qry-4-reversed-between-bounds) | Reversed `between` bounds silently return nothing | Low |
 | [QRY-5](#qry-5-sort-key-values-are-not-templated) | Sort-key condition values are not templated | Low |
 | [QRY-6](#qry-6-isattributemap-inspects-only-the-first-value) | `isAttributeMap` inspects only the first value of `startKey` | Low |
+| [BAT-5](#bat-5-batchget-projection-omits-key-attributes) | BatchGet projection omits key attributes | Low |
 | [KEY-2](#key-2-empty-string-key-or-key-field) | Empty-string keys and key fields are not rejected | Medium |
 | [KEY-3](#key-3-malformed-placeholders-are-treated-as-literals) | Malformed placeholders (`{{}}`, `{{ id }}`) are treated as literals | Low |
 | [KEY-4](#key-4-duplicate-field-in-one-template) | A duplicate field in one template is not checked on extraction | Low |
@@ -67,39 +67,42 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [EXP-4](#exp-4-needsalias-ignores-names-starting-with-a-digit) | `needsAlias` ignores names starting with a digit | Low |
 | [PUT-3](#put-3-put-returns-the-locally-built-item) | `put` returns the locally built item, including key attributes | Low |
 
-High-severity entries have pending `it.todo` tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. Medium and Low entries have no regression tests yet.
+Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. Medium and Low entries have no regression tests yet.
 
 ---
 
-## Expressions & aliasing
+## Entity definition
 
-### EXP-1. Attribute names with non-word characters produce invalid expressions
-**Severity:** High · **Where:** `aliasAttributeName` (`src/utils/expression-names.ts`), used by `compileUpdateActions` (`src/operations/update.ts`), query/scan projections and `remove-ttl.ts`
+### ENT-1. `defineEntity` without a `sortKey` does not type-check
+**Severity:** High · **Where:** `defineEntity` (`src/core/define-entity.ts`)
 
-**Behaviour:** `aliasAttributeName` only prepends `#` to a string built from the raw attribute name, and value placeholders are built the same way. Reproduction:
+**Behaviour:** `SK` defaults to `never`, and the sort-key check is the conditional type `SK extends string ? … : unknown`. A conditional on a bare type parameter distributes, so with `SK = never` it evaluates to `never`, and the whole `config` parameter becomes `never`. Any entity that omits `sortKey` fails to compile, even on a table that has only a partition key:
 
 ```ts
-compileUpdateActions({ sets: [{ path: "user-id", value: 1 }, { path: "address.city", value: 2 }], ... })
-// updateExpression: "SET #s0_user-id = :s0_user-id, #s1_address.city = :s1_address.city"
+const t = defineTable({ tableName: "T", partitionKey: { name: "pk", definition: "pk" } });
+defineEntity({ name: "E", schema: z.object({ id: z.string() }), table: t, partitionKey: "E#{{id}}" });
+// error TS2345: … is not assignable to parameter of type 'never'.
 ```
 
-DynamoDB placeholders may only contain `[A-Za-z0-9_]`, so this is a syntax error. Any update, projection or TTL removal that touches a legal attribute name such as `user-id`, `first name` or `a.b` fails with a `ValidationException`. Dot-paths do **not** address nested attributes, either: proper nesting needs one alias per segment (`#a.#b`).
+At runtime it works. Every existing test entity sets a `sortKey`, so the suite never caught it.
 
-**Fix:** Generate positional aliases (`#u0` / `:u0`), as `src/operations/filter.ts` already does. If nested paths are wanted, add an explicit path type (for example `["address", "city"]`) and alias each segment.
+**Fix:** Wrap the check so it doesn't distribute: `[SK] extends [never] ? unknown : (… existing check …)`. Add a type-level test for an entity with no sort key.
+
+## Expressions & aliasing
 
 ### EXP-2. User-supplied `expressionNames` / `expressionValues` can overwrite generated aliases
 **Severity:** High · **Where:** query, scan, put, update, delete, transact-write (`{ ...generated, ...options.expressionNames }`)
 
-**Behaviour:** User maps are spread last, so a user key that matches a generated alias wins. For example, a user `#f0` overrides the filter builder's `#f0`, and `#s0_name` overrides the update builder's alias. The expression still compiles, but it reads or writes the **wrong attribute** with no error.
+**Behaviour:** User maps are spread last, so a user key that matches a generated alias wins. For example, a user `#f0` overrides the filter builder's `#f0`, and a user `#u0` overrides the update builder's first alias. The expression still compiles, but it reads or writes the **wrong attribute** with no error.
 
-**Fix:** Detect overlapping keys while merging and return a `"validation"` error. Alternatively, give generated aliases a reserved prefix (such as `#__ds_`) that user aliases may not use.
+**Fix:** Detect overlapping keys while merging and return a `"validation"` error. Alternatively, give generated aliases a reserved prefix (such as `#__ds_`) that user aliases may not use. Until then, the README warns users not to use the `#u`/`#p`/`#f` + number forms.
 
 ### EXP-3. Filter paths with dots target a literal top-level attribute
 **Severity:** High · **Where:** `src/operations/filter.ts`
 
 **Behaviour:** Filter nodes map `#f{n}` → `path` as one name. `{ op: "eq", path: "address.city", ... }` therefore compares against a top-level attribute literally named `address.city`. The expression is valid, so the filter silently matches nothing. The typed builder limits `path` to `keyof T`, but raw `FilterNode` objects and string-keyed entities accept any string.
 
-**Fix:** The same as EXP-1: support segmented paths, or reject paths containing `.` and `[`.
+**Fix:** Support segmented paths (for example `["address", "city"]`, aliased `#f0.#f1`), or reject paths containing `.` and `[`. Update and projection names also treat a dot as part of the attribute name, which the README now documents; unlike filters, they don't let you write a nested path by accident.
 
 ### EXP-4. `needsAlias` ignores names starting with a digit
 **Severity:** Low · **Where:** `needsAlias`, `buildExpressionAttributeNames` (exported utilities)
@@ -316,12 +319,12 @@ DynamoDB placeholders may only contain `[A-Za-z0-9_]`, so this is a syntax error
 
 **Fix:** Deduplicate BatchGet keys automatically. For BatchWrite, return a `"validation"` error.
 
-### BAT-5. BatchGet projection uses raw aliases
-**Severity:** Medium
+### BAT-5. BatchGet projection omits key attributes
+**Severity:** Low
 
-**Behaviour:** Projection aliases are built as `` `#proj_${attr}` `` without sanitising, so the same failure as EXP-1 occurs for names like `user-id`. The projection also doesn't add key attributes automatically, so they can't be used for entity matching (see BAT-1).
+**Behaviour:** When a projection is given, key attributes are only returned if the caller lists them. Callers can't tell which requested key a returned item belongs to, and the BAT-1 fix (matching items back to entities by key) needs them.
 
-**Fix:** Use positional aliases, and always project the key attributes.
+**Fix:** Always add the table's key attributes to BatchGet projections.
 
 ---
 
@@ -434,6 +437,7 @@ DynamoDB placeholders may only contain `[A-Za-z0-9_]`, so this is a syntax error
 |------------|-------|-------------|
 | §6.1 | GSI query used the table's sort key name | `dc25093`: `resolveQueryKeyInfo` resolves the index's own key names |
 | §7.2 | Unprocessed batch items discarded after one retry | `b436a0b`: exponential-backoff retry, and an error once retries are exhausted |
+| EXP-1 | Attribute names containing `-`, `.`, spaces and similar produced invalid placeholders in update, projection (query, scan, get, transactGet, batchGet) and remove-ttl expressions. Includes the alias half of BAT-5. | Positional placeholders (`#u0`/`:u0`, `#p0`, `#ttl`) and a shared `buildProjection` helper. Covered by the EXP-1 tests in `src/__tests__/edge-cases.test.ts`. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

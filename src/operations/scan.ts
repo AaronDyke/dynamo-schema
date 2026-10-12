@@ -11,7 +11,7 @@ import { createDynamoError } from "../types/operations.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
+import { buildProjection } from "../utils/expression-names.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
 
@@ -31,24 +31,14 @@ export const executeScan = async <
   options?: ScanOptions,
 ): Promise<Result<ScanResult<StandardSchemaV1.InferOutput<S>>, DynamoError>> => {
   // 1. Build projection expression
-  let projectionExpression: string | undefined;
-  const projNames: Record<string, string> = {};
-  if (options?.projection && options.projection.length > 0) {
-    const projParts: string[] = [];
-    for (const attr of options.projection) {
-      const alias = aliasAttributeName(`proj_${attr}`);
-      projNames[alias] = attr;
-      projParts.push(alias);
-    }
-    projectionExpression = projParts.join(", ");
-  }
+  const projection = buildProjection(options?.projection);
 
   // 2. Resolve filter expression (string, FilterNode, or callback)
   const resolvedFilter = resolveFilterInput(options?.filter);
 
   // 3. Merge expression attribute names
   const mergedNames: Record<string, string> = {
-    ...projNames,
+    ...projection?.names,
     ...resolvedFilter.expressionAttributeNames,
     ...options?.expressionNames,
   };
@@ -100,7 +90,7 @@ export const executeScan = async <
       limit: options?.limit,
       exclusiveStartKey: startKey,
       consistentRead: options?.consistentRead,
-      projectionExpression,
+      projectionExpression: projection?.expression,
     });
   } catch (cause) {
     return err(

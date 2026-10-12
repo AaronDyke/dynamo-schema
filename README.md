@@ -370,10 +370,30 @@ await users.update(
     .set("name", "Alice Smith"),
 );
 // Produces:
-// SET #sne0_createdAt = if_not_exists(#sne0_createdAt, :sne0_createdAt),
-//     #s0_updatedAt = :s0_updatedAt,
-//     #s1_name = :s1_name
+// SET #u0 = :u0, #u1 = :u1, #u2 = if_not_exists(#u2, :u2)
+// with ExpressionAttributeNames { "#u0": "updatedAt", "#u1": "name", "#u2": "createdAt" }
 ```
+
+**Attribute names and placeholders:**
+
+Every attribute the builder touches gets a positional placeholder (`#u0` / `:u0`, `#u1` / `:u1`, ...). Projections use `#p0`, `#p1`, ... and filter/condition builders use `#f0` / `:f0`. Any legal DynamoDB attribute name therefore works, including names containing `-`, `.` or spaces:
+
+```typescript
+await users.update(
+  { userId: "123" },
+  (u) => u.set("display-name", "Alice").remove("last login"),
+);
+// SET #u0 = :u0 REMOVE #u1
+// with ExpressionAttributeNames { "#u0": "display-name", "#u1": "last login" }
+
+await users.query({
+  partitionKey: { userId: "123" },
+  options: { projection: ["user-id", "first name"] },
+});
+// ProjectionExpression: "#p0, #p1"
+```
+
+A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Avoid starting your own `expressionNames` / `expressionValues` keys with `#u`, `#p`, `#f`, `:u` or `:f` followed by a number, because generated placeholders use those forms.
 
 **Update with condition:**
 

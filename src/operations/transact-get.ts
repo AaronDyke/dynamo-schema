@@ -15,6 +15,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { buildProjection } from "../utils/expression-names.js";
 
 /** A single transact get request for an entity. */
 export interface TransactGetEntityRequest<S extends StandardSchemaV1 = StandardSchemaV1> {
@@ -84,24 +85,13 @@ export const executeTransactGet = async (
     }
 
     // Build projection
-    let projectionExpression: string | undefined;
-    let expressionAttributeNames: Record<string, string> | undefined;
-    if (req.projection && req.projection.length > 0) {
-      expressionAttributeNames = {};
-      const parts: string[] = [];
-      for (const attr of req.projection) {
-        const alias = `#proj_${attr}`;
-        expressionAttributeNames[alias] = attr;
-        parts.push(alias);
-      }
-      projectionExpression = parts.join(", ");
-    }
+    const projection = buildProjection(req.projection);
 
     transactItems.push({
       tableName: req.entity.table.tableName,
       key,
-      projectionExpression,
-      expressionAttributeNames,
+      projectionExpression: projection?.expression,
+      expressionAttributeNames: projection?.names,
     });
   }
 

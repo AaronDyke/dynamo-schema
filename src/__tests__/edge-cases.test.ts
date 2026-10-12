@@ -1,17 +1,130 @@
 /**
- * Pending regression tests for the High-severity entries in TODO/EDGE-CASES.md.
+ * Regression tests for the High-severity entries in TODO/EDGE-CASES.md.
  *
- * Each `describe` is named after a stable entry ID. When fixing an entry,
- * replace its `it.todo` cases with real tests (or move them next to the
- * operation's own tests) and move the entry to "Resolved" in EDGE-CASES.md.
+ * Each `describe` is named after a stable entry ID. Open entries hold
+ * `it.todo` cases; when fixing an entry, replace them with real tests and
+ * move the entry to "Resolved" in EDGE-CASES.md.
  */
 
-import { describe, it } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import { defineTable } from "../core/define-table.js";
+import { defineEntity } from "../core/define-entity.js";
+import { compileUpdateActions, createUpdateBuilder } from "../operations/update.js";
+import { executeQuery } from "../operations/query.js";
+import { executeScan } from "../operations/scan.js";
+import { executeGet } from "../operations/get.js";
+import { executeTransactGet } from "../operations/transact-get.js";
+import { executeBatchGet } from "../operations/batch-get.js";
+import { executeRemoveTtl } from "../operations/remove-ttl.js";
+import { userEntity, userSchema, createMockAdapter } from "./fixtures.js";
+
+/** Attribute names that are legal in DynamoDB but not valid as raw placeholder text. */
+const AWKWARD_NAMES = ["user-id", "first name", "address.city"] as const;
+
+/**
+ * Asserts that every `#name` / `:value` placeholder in `expression` is
+ * syntactically valid (`[A-Za-z0-9_]` only) and defined in the matching map.
+ */
+const expectValidPlaceholders = (
+  expression: string | undefined,
+  names: Readonly<Record<string, string>> | undefined,
+  values: Readonly<Record<string, unknown>> | undefined = {},
+): void => {
+  const tokens = expression?.match(/[#:][^\s,()]+/g) ?? [];
+  expect(tokens.length).toBeGreaterThan(0);
+  for (const token of tokens) {
+    expect(token).toMatch(/^[#:][A-Za-z0-9_]+$/);
+    const map = token.startsWith("#") ? names : values;
+    expect(map ?? {}).toHaveProperty([token]);
+  }
+};
 
 describe("EXP-1: attribute names with non-word characters", () => {
-  it.todo("compileUpdateActions produces valid placeholders for names containing '-', '.' or spaces");
-  it.todo("query and scan projections alias names like 'user-id' with valid placeholders");
-  it.todo("removeTtl aliases a TTL attribute name containing '-' with a valid placeholder");
+  it("compileUpdateActions produces valid placeholders for names containing '-', '.' or spaces", () => {
+    const [a, b, c] = AWKWARD_NAMES;
+    const actions = createUpdateBuilder<Record<string, unknown>>()
+      .set(a, 1)
+      .setIfNotExists(b, 2)
+      .remove(c)
+      .add(a, 3)
+      .delete(b, new Set(["x"]))
+      .build();
+    const compiled = compileUpdateActions(actions);
+
+    expectValidPlaceholders(
+      compiled.updateExpression,
+      compiled.expressionAttributeNames,
+      compiled.expressionAttributeValues,
+    );
+    expect(Object.values(compiled.expressionAttributeNames)).toEqual([a, b, c, a, b]);
+  });
+
+  it("query and scan projections alias names like 'user-id' with valid placeholders", async () => {
+    const adapter = createMockAdapter();
+    await executeQuery(userEntity, adapter, {
+      partitionKey: { userId: "u1" },
+      options: { projection: AWKWARD_NAMES },
+    });
+    await executeScan(userEntity, adapter, { projection: AWKWARD_NAMES });
+
+    for (const call of [
+      vi.mocked(adapter.query).mock.calls[0]![0],
+      vi.mocked(adapter.scan).mock.calls[0]![0],
+    ]) {
+      expectValidPlaceholders(call.projectionExpression, call.expressionAttributeNames);
+      for (const name of AWKWARD_NAMES) {
+        expect(Object.values(call.expressionAttributeNames ?? {})).toContain(name);
+      }
+    }
+  });
+
+  it("get, transactGet and batchGet projections alias names like 'user-id' with valid placeholders", async () => {
+    const adapter = createMockAdapter();
+    await executeGet(userEntity, adapter, { userId: "u1" }, { projection: AWKWARD_NAMES });
+    await executeTransactGet(adapter, [
+      { entity: userEntity, keyInput: { userId: "u1" }, projection: AWKWARD_NAMES },
+    ]);
+    await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }], projection: AWKWARD_NAMES },
+    ]);
+
+    const getCall = vi.mocked(adapter.getItem).mock.calls[0]![0];
+    const transactCall = vi.mocked(adapter.transactGetItems).mock.calls[0]![0][0]!;
+    const batchCall = vi.mocked(adapter.batchGetItem).mock.calls[0]![0][0]!;
+
+    for (const call of [getCall, transactCall, batchCall]) {
+      expectValidPlaceholders(call.projectionExpression, call.expressionAttributeNames);
+      expect(Object.values(call.expressionAttributeNames ?? {})).toEqual([...AWKWARD_NAMES]);
+    }
+  });
+
+  it("removeTtl aliases a TTL attribute name containing '-' with a valid placeholder", async () => {
+    const table = defineTable({
+      tableName: "DashTtlTable",
+      partitionKey: { name: "pk", definition: "pk" },
+      sortKey: { name: "sk", definition: "sk" },
+      ttl: { attributeName: "expires-at" },
+    });
+    const entity = defineEntity({
+      name: "DashTtlUser",
+      schema: userSchema,
+      table,
+      partitionKey: "USER#{{userId}}",
+      sortKey: "PROFILE",
+    });
+    const adapter = createMockAdapter();
+
+    const result = await executeRemoveTtl(entity, adapter, { userId: "u1" });
+
+    expect(result.success).toBe(true);
+    const call = vi.mocked(adapter.updateItem).mock.calls[0]![0];
+    expectValidPlaceholders(call.updateExpression, call.expressionAttributeNames);
+    expect(Object.values(call.expressionAttributeNames ?? {})).toEqual(["expires-at"]);
+  });
+});
+
+describe("ENT-1: defineEntity without a sortKey", () => {
+  it.todo("defineEntity type-checks for an entity with no sortKey on a partition-key-only table");
 });
 
 describe("EXP-2: user expressionNames/expressionValues overwriting generated aliases", () => {

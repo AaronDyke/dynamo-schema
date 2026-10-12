@@ -20,6 +20,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { buildProjection } from "../utils/expression-names.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchGetItem request. */
@@ -170,18 +171,12 @@ export const executeBatchGet = async (
     const tableName = req.entity.table.tableName;
 
     // Build projection for this entity's table
-    if (req.projection && req.projection.length > 0 && !tableConfigs.has(tableName)) {
-      const names: Record<string, string> = {};
-      const parts: string[] = [];
-      for (const attr of req.projection) {
-        const alias = `#proj_${attr}`;
-        names[alias] = attr;
-        parts.push(alias);
-      }
+    const projection = buildProjection(req.projection);
+    if (projection && !tableConfigs.has(tableName)) {
       tableConfigs.set(tableName, {
         ...(req.consistentRead !== undefined ? { consistentRead: req.consistentRead } : {}),
-        projectionExpression: parts.join(", "),
-        expressionAttributeNames: names,
+        projectionExpression: projection.expression,
+        expressionAttributeNames: { ...projection.names },
       });
     } else if (!tableConfigs.has(tableName)) {
       tableConfigs.set(tableName, {
