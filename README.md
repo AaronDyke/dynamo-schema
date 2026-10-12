@@ -779,6 +779,20 @@ if (result.success) {
 }
 ```
 
+**Several entities on one table:**
+
+In a single-table design, request each entity separately; every returned item is matched to the entity whose key it has, and every requested entity gets an array (empty if nothing was found):
+
+```typescript
+const result = await client.batchGet([
+  { entity: userEntity, keys: [{ userId: "1" }], projection: ["name"] },
+  { entity: orderEntity, keys: [{ userId: "1", orderId: "o1" }], projection: ["total"] },
+]);
+// result.data.responses => { User: [{ name: "Ann" }], Order: [{ total: 42 }] }
+```
+
+DynamoDB allows one projection and one `consistentRead` setting per table in a request, so entities sharing a table share them: the read is consistent if any of them asks for it, and DynamoDB returns the union of their projections plus the key attributes (or full items if any of them has no projection). Each entity's items are then trimmed back to its own projection.
+
 **Custom retry options:**
 
 ```typescript

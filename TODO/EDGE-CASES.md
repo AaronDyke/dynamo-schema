@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [BAT-1](#bat-1-multiple-entities-on-one-table-are-merged-in-batchget) | BatchGet merges results and settings for entities sharing a table | **High** |
 | [BAT-2](#bat-2-batchwrite-partial-failure-reports-no-progress) | BatchWrite returns an error after earlier chunks were already written | **High** |
 | [BAT-3](#bat-3-entity-name-collisions-in-batchgetresult) | Entities with the same `name` collide in `BatchGetResult` | **High** |
 | [HOOK-1](#hook-1-hooks-are-bypassed-by-batch-transaction-query-and-scan) | Hooks are bypassed by batch, transaction, query and scan | **High** |
@@ -45,7 +44,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [QRY-4](#qry-4-reversed-between-bounds) | Reversed `between` bounds silently return nothing | Low |
 | [QRY-5](#qry-5-sort-key-values-are-not-templated) | Sort-key condition values are not templated | Low |
 | [QRY-6](#qry-6-isattributemap-inspects-only-the-first-value) | `isAttributeMap` inspects only the first value of `startKey` | Low |
-| [BAT-5](#bat-5-batchget-projection-omits-key-attributes) | BatchGet projection omits key attributes | Low |
 | [KEY-2](#key-2-empty-string-key-or-key-field) | Empty-string keys and key fields are not rejected | Medium |
 | [KEY-3](#key-3-malformed-placeholders-are-treated-as-literals) | Malformed placeholders (`{{}}`, `{{ id }}`) are treated as literals | Low |
 | [KEY-4](#key-4-duplicate-field-in-one-template) | A duplicate field in one template is not checked on extraction | Low |
@@ -225,13 +223,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 
 ## Batch operations
 
-### BAT-1. Multiple entities on one table are merged in BatchGet
-**Severity:** High · **Where:** `executeBatchGet` (`src/operations/batch-get.ts`)
-
-**Behaviour:** `tableConfigs` is keyed by table name. The **first** request's `projection` and `consistentRead` apply to every entity on that table. `processResponses` assigns every returned item to the first matching entity name, so in a single-table design, `OrderEntity` items show up under `responses.User`.
-
-**Fix:** Merge projections (a union) and OR together `consistentRead` for each table. Match each returned item to its entity by comparing its key attributes against the requested keys, or by an entity-type attribute.
-
 ### BAT-2. BatchWrite partial failure reports no progress
 **Severity:** High · **Where:** `executeBatchWrite` (`src/operations/batch-write.ts`)
 
@@ -252,13 +243,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 **Behaviour:** Repeated keys in `BatchGetEntityRequest.keys`, and repeated put/delete targets in a BatchWrite, are sent as they are. DynamoDB rejects the whole request with *"Provided list of item keys contains duplicates"*. It doesn't merely waste capacity.
 
 **Fix:** Deduplicate BatchGet keys automatically. For BatchWrite, return a `"validation"` error.
-
-### BAT-5. BatchGet projection omits key attributes
-**Severity:** Low
-
-**Behaviour:** When a projection is given, key attributes are only returned if the caller lists them. Callers can't tell which requested key a returned item belongs to, and the BAT-1 fix (matching items back to entities by key) needs them.
-
-**Fix:** Always add the table's key attributes to BatchGet projections.
 
 ---
 
@@ -381,6 +365,8 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | PUT-1 | Every index an entity mapped was required on every write, so an item missing an index field failed the whole put and sparse GSIs were impossible. | New shared `buildItemKeyAttributes` (`src/keys/item-keys.ts`) replaces three copies of the key-building code in put, batchWrite and transactWrite. An index whose template fields are all absent is skipped; partly present fields still return a `"key"` error. Covered by the PUT-1 tests. |
 | PUT-2 | Key, index and TTL attributes were assigned over the validated data, silently replacing schema fields with the same name (`pk`, `gsi1pk`, `expiresAt`, …). | `buildStoredItem` (`src/keys/item-keys.ts`), used by put, batchWrite and transactWrite, returns a `"key"` error when a field holds a different value than a generated key attribute (equal values are allowed), and only fills in the default TTL when the item has none. Update's auto-TTL is skipped when the update already touches the TTL attribute. Covered by the PUT-2 tests. |
 | TTL-4 | Put requests in `batchWrite` and `transactWrite` didn't get the entity's default TTL. | Fixed alongside PUT-2: all three write paths now build items with `buildStoredItem`, which applies the default TTL. Covered by the TTL-4 test. |
+| BAT-1 | For entities sharing a table, BatchGet used the first entity's projection and `consistentRead` for all of them, and filed every returned item under the first entity's name. | Per-table settings combine all entities (consistent if any asks; union of projections plus key attributes, or full items if any entity has no projection). Each item is matched to its entity by key and trimmed to that entity's projection. Every requested entity gets an array. Covered by the BAT-1 tests. |
+| BAT-5 | BatchGet projections didn't include key attributes, so returned items couldn't be matched to requests. | Fixed with BAT-1: BatchGet projections always add the table's key attributes (and trim them back off for the caller). |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

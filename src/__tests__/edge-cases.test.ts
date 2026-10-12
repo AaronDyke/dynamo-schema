@@ -120,10 +120,17 @@ describe("EXP-1: attribute names with non-word characters", () => {
     const transactCall = vi.mocked(adapter.transactGetItems).mock.calls[0]![0][0]!;
     const batchCall = vi.mocked(adapter.batchGetItem).mock.calls[0]![0][0]!;
 
-    for (const call of [getCall, transactCall, batchCall]) {
+    for (const call of [getCall, transactCall]) {
       expectValidPlaceholders(call.projectionExpression, call.expressionAttributeNames);
       expect(Object.values(call.expressionAttributeNames ?? {})).toEqual([...AWKWARD_NAMES]);
     }
+    // BatchGet also projects the key attributes, to match items to entities (BAT-1).
+    expectValidPlaceholders(batchCall.projectionExpression, batchCall.expressionAttributeNames);
+    expect(Object.values(batchCall.expressionAttributeNames ?? {})).toEqual([
+      ...AWKWARD_NAMES,
+      "pk",
+      "sk",
+    ]);
   });
 
   it("removeTtl aliases a TTL attribute name containing '-' with a valid placeholder", async () => {
@@ -660,8 +667,83 @@ describe("TTL-4: batchWrite and transactWrite default TTL", () => {
 });
 
 describe("BAT-1: multiple entities on one table in BatchGet", () => {
-  it.todo("applies each entity's projection to its own keys");
-  it.todo("groups returned items under the entity that requested them");
+  // A second entity on the same table as userEntity (single-table design).
+  const orderEntity = defineEntity({
+    name: "Order",
+    schema: z.object({ userId: z.string(), orderId: z.string(), total: z.number() }),
+    table: usersTable,
+    partitionKey: "USER#{{userId}}",
+    sortKey: "ORDER#{{orderId}}",
+  });
+  const userItem = { pk: "USER#u1", sk: "PROFILE", userId: "u1", name: "Ann", email: "a@b.c" };
+  const orderItem = { pk: "USER#u1", sk: "ORDER#o1", userId: "u1", orderId: "o1", total: 42 };
+
+  it("applies each entity's projection to its own keys", async () => {
+    const adapter = createMockAdapter();
+    vi.mocked(adapter.batchGetItem).mockResolvedValueOnce({
+      responses: { UsersTable: [orderItem, userItem] },
+      unprocessedKeys: [],
+    });
+
+    const result = await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }], projection: ["name"] },
+      { entity: orderEntity, keys: [{ userId: "u1", orderId: "o1" }], projection: ["total"], consistentRead: true },
+    ]);
+
+    // One request for the table: the union of projections plus key attributes,
+    // consistent because one entity asked for it.
+    const tableRequest = vi.mocked(adapter.batchGetItem).mock.calls[0]![0][0]!;
+    expect(Object.values(tableRequest.expressionAttributeNames ?? {})).toEqual(["name", "total", "pk", "sk"]);
+    expect(tableRequest.consistentRead).toBe(true);
+    // Each entity sees only what it asked for.
+    expect(result).toEqual({
+      success: true,
+      data: { responses: { User: [{ name: "Ann" }], Order: [{ total: 42 }] } },
+    });
+  });
+
+  it("groups returned items under the entity that requested them", async () => {
+    const adapter = createMockAdapter();
+    vi.mocked(adapter.batchGetItem).mockResolvedValueOnce({
+      responses: { UsersTable: [orderItem, userItem] },
+      unprocessedKeys: [],
+    });
+
+    const result = await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }] },
+      { entity: orderEntity, keys: [{ userId: "u1", orderId: "o1" }], projection: ["total"] },
+    ]);
+
+    // One entity wants full items, so the table request has no projection.
+    expect(vi.mocked(adapter.batchGetItem).mock.calls[0]![0][0]!.projectionExpression).toBeUndefined();
+    expect(result).toEqual({
+      success: true,
+      data: { responses: { User: [userItem], Order: [{ total: 42 }] } },
+    });
+  });
+
+  it("matches items to entities with a raw adapter too", async () => {
+    const adapter = createRawMockAdapter();
+    const marshal = (item: Record<string, unknown>) => {
+      const m = marshallItem(item);
+      if (!m.success) throw m.error;
+      return m.data;
+    };
+    vi.mocked(adapter.batchGetItem).mockResolvedValueOnce({
+      responses: { UsersTable: [marshal(orderItem), marshal(userItem)] },
+      unprocessedKeys: [],
+    });
+
+    const result = await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }] },
+      { entity: orderEntity, keys: [{ userId: "u1", orderId: "o1" }] },
+    ]);
+
+    expect(result).toEqual({
+      success: true,
+      data: { responses: { User: [userItem], Order: [orderItem] } },
+    });
+  });
 });
 
 describe("BAT-2: BatchWrite partial failure", () => {
