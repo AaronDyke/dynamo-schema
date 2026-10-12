@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [BAT-3](#bat-3-entity-name-collisions-in-batchgetresult) | Entities with the same `name` collide in `BatchGetResult` | **High** |
 | [HOOK-1](#hook-1-hooks-are-bypassed-by-batch-transaction-query-and-scan) | Hooks are bypassed by batch, transaction, query and scan | **High** |
 | [UPD-1](#upd-1-overlapping-paths-in-one-update) | Overlapping paths in one update are only rejected by AWS | Medium |
 | [UPD-2](#upd-2-add--delete-accept-any-value-type) | `add` / `delete` accept any value type | Medium |
@@ -222,13 +221,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 
 ## Batch operations
 
-### BAT-3. Entity name collisions in `BatchGetResult`
-**Severity:** High
-
-**Behaviour:** `responses` is keyed by `entity.name`. Two entities that share a `name` (even on different tables) have their results merged under one key.
-
-**Fix:** Reject duplicate entity names within one `batchGet` call, or key the results by entity reference.
-
 ### BAT-4. Duplicate keys in one batch are rejected by AWS
 **Severity:** Medium
 
@@ -360,6 +352,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | BAT-1 | For entities sharing a table, BatchGet used the first entity's projection and `consistentRead` for all of them, and filed every returned item under the first entity's name. | Per-table settings combine all entities (consistent if any asks; union of projections plus key attributes, or full items if any entity has no projection). Each item is matched to its entity by key and trimmed to that entity's projection. Every requested entity gets an array. Covered by the BAT-1 tests. |
 | BAT-5 | BatchGet projections didn't include key attributes, so returned items couldn't be matched to requests. | Fixed with BAT-1: BatchGet projections always add the table's key attributes (and trim them back off for the caller). |
 | BAT-2 | When a later BatchWrite chunk failed, or items stayed unprocessed after retries, earlier chunks were already written but the error didn't say which requests were or weren't. | `executeBatchWrite` now fails with a `BatchWriteError` whose `unprocessed` lists every request not confirmed written, in the caller's order (DynamoDB's `UnprocessedItems` are matched back by key). Requests are chunked in the caller's order. Covered by the BAT-2 tests. |
+| BAT-3 | `BatchGetResult.responses` is keyed by entity name, so two different entities sharing a name had their results merged. | `executeBatchGet` returns a `"validation"` error before sending anything when two different entities share a name; the same entity in several requests is still allowed. Covered by the BAT-3 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

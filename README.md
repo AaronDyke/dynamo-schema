@@ -800,6 +800,8 @@ const result = await client.batchGet([
 // result.data.responses => { User: [{ name: "Ann" }], Order: [{ total: 42 }] }
 ```
 
+Results are grouped by entity `name`, so two different entities in one `batchGet` call must have different names; otherwise the call returns a `"validation"` error. Passing the same entity in several requests is fine.
+
 DynamoDB allows one projection and one `consistentRead` setting per table in a request, so entities sharing a table share them: the read is consistent if any of them asks for it, and DynamoDB returns the union of their projections plus the key attributes (or full items if any of them has no projection). Each entity's items are then trimmed back to its own projection.
 
 **Custom retry options:**

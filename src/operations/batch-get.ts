@@ -158,6 +158,8 @@ const processResponses = (
  * - When DynamoDB returns `UnprocessedKeys`, retries them with exponential
  *   backoff (default: up to 3 retries at 100ms, 200ms, 400ms intervals).
  * - Returns a `DynamoError` if keys remain unprocessed after all retries.
+ * - Results are grouped by entity name; a `"validation"` error is returned if
+ *   two different entities in `requests` share a name.
  *
  * @param adapter - The SDK adapter
  * @param requests - Array of entity get requests
@@ -182,6 +184,23 @@ export const executeBatchGet = async (
   requests: readonly BatchGetEntityRequest[],
   options?: BatchGetOptions,
 ): Promise<Result<BatchGetResult, DynamoError>> => {
+  // 0. Results are keyed by entity name, so two different entities may not share one
+  const entitiesByName = new Map<string, EntityDefinition>();
+  for (const req of requests) {
+    const existing = entitiesByName.get(req.entity.name);
+    if (existing && existing !== req.entity) {
+      return err(
+        createDynamoError(
+          "validation",
+          `BatchGet: two different entities are both named "${req.entity.name}" ` +
+            `(tables "${existing.table.tableName}" and "${req.entity.table.tableName}"). ` +
+            `Results are grouped by entity name, so give each entity a unique name.`,
+        ),
+      );
+    }
+    entitiesByName.set(req.entity.name, req.entity);
+  }
+
   // 1. Build keys for each request and flatten into adapter format
   type FlatKey = { tableName: string; key: Record<string, unknown> };
   const flatKeys: FlatKey[] = [];

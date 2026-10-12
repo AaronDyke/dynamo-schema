@@ -822,7 +822,43 @@ describe("BAT-2: BatchWrite partial failure", () => {
 });
 
 describe("BAT-3: entity name collisions in BatchGetResult", () => {
-  it.todo("rejects two requests whose entities share a name but differ");
+  it("rejects two requests whose entities share a name but differ", async () => {
+    const otherUser = defineEntity({
+      name: "User", // same name as userEntity
+      schema: userSchema,
+      table: defineTable({
+        tableName: "OtherUsersTable",
+        partitionKey: { name: "pk", definition: "pk" },
+        sortKey: { name: "sk", definition: "sk" },
+      }),
+      partitionKey: "USER#{{userId}}",
+      sortKey: "PROFILE",
+    });
+    const adapter = createMockAdapter();
+
+    const result = await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }] },
+      { entity: otherUser, keys: [{ userId: "u2" }] },
+    ]);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.type).toBe("validation");
+      expect(result.error.message).toContain('both named "User"');
+    }
+    expect(adapter.batchGetItem).not.toHaveBeenCalled();
+  });
+
+  it("allows the same entity in several requests", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executeBatchGet(adapter, [
+      { entity: userEntity, keys: [{ userId: "u1" }] },
+      { entity: userEntity, keys: [{ userId: "u2" }] },
+    ]);
+
+    expect(result.success).toBe(true);
+  });
 });
 
 describe("HOOK-1: hooks bypassed by batch, transaction, query and scan", () => {
