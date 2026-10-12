@@ -6,9 +6,10 @@
  * move the entry to "Resolved" in EDGE-CASES.md.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { defineTable } from "../core/define-table.js";
 import { defineEntity } from "../core/define-entity.js";
+import { createClient } from "../core/create-client.js";
 import { compileUpdateActions, createUpdateBuilder } from "../operations/update.js";
 import { executeQuery } from "../operations/query.js";
 import { executeScan } from "../operations/scan.js";
@@ -16,7 +17,15 @@ import { executeGet } from "../operations/get.js";
 import { executeTransactGet } from "../operations/transact-get.js";
 import { executeBatchGet } from "../operations/batch-get.js";
 import { executeRemoveTtl } from "../operations/remove-ttl.js";
-import { userEntity, userSchema, createMockAdapter } from "./fixtures.js";
+import { executePut } from "../operations/put.js";
+import type { EntityKeyInput } from "../types/entity.js";
+import {
+  userEntity,
+  userSchema,
+  usersTable,
+  validUser,
+  createMockAdapter,
+} from "./fixtures.js";
 
 /** Attribute names that are legal in DynamoDB but not valid as raw placeholder text. */
 const AWKWARD_NAMES = ["user-id", "first name", "address.city"] as const;
@@ -124,7 +133,83 @@ describe("EXP-1: attribute names with non-word characters", () => {
 });
 
 describe("ENT-1: defineEntity without a sortKey", () => {
-  it.todo("defineEntity type-checks for an entity with no sortKey on a partition-key-only table");
+  const pkOnlyTable = defineTable({
+    tableName: "PkOnlyTable",
+    partitionKey: { name: "pk", definition: "pk" },
+  });
+
+  it("defineEntity type-checks for an entity with no sortKey on a partition-key-only table", () => {
+    const entity = defineEntity({
+      name: "PkOnly",
+      schema: userSchema,
+      table: pkOnlyTable,
+      partitionKey: "USER#{{userId}}",
+    });
+
+    expect(entity.sortKey).toBeUndefined();
+    expectTypeOf<EntityKeyInput<typeof entity>>().toEqualTypeOf<{ readonly userId: string }>();
+  });
+
+  it("requires the partition key fields in the client's key input", () => {
+    const entity = defineEntity({
+      name: "PkOnly",
+      schema: userSchema,
+      table: pkOnlyTable,
+      partitionKey: "USER#{{userId}}",
+    });
+    const users = createClient({ adapter: createMockAdapter() }).entity(entity);
+
+    // Type-level only: the calls are never awaited.
+    const typeChecks = (): void => {
+      void users.get({ userId: "u1" });
+      // @ts-expect-error -- `userId` is required
+      void users.get({});
+    };
+    expect(typeChecks).toBeTypeOf("function");
+  });
+
+  it("still rejects key templates that reference fields missing from the schema", () => {
+    // @ts-expect-error -- `missing` is not a schema field
+    defineEntity({
+      name: "BadPk",
+      schema: userSchema,
+      table: pkOnlyTable,
+      partitionKey: "USER#{{missing}}",
+    });
+    // @ts-expect-error -- `missing` is not a schema field
+    defineEntity({
+      name: "BadSk",
+      schema: userSchema,
+      table: usersTable,
+      partitionKey: "USER#{{userId}}",
+      sortKey: "SK#{{missing}}",
+    });
+  });
+
+  it("put and get work end to end for an entity with no sortKey", async () => {
+    const entity = defineEntity({
+      name: "PkOnly",
+      schema: userSchema,
+      table: pkOnlyTable,
+      partitionKey: "USER#{{userId}}",
+    });
+    const adapter = createMockAdapter();
+
+    const putResult = await executePut(entity, adapter, validUser);
+    await executeGet(entity, adapter, { userId: validUser.userId });
+
+    expect(putResult.success).toBe(true);
+    expect(vi.mocked(adapter.putItem).mock.calls[0]![0].item).toMatchObject({
+      pk: `USER#${validUser.userId}`,
+    });
+    expect(vi.mocked(adapter.getItem).mock.calls[0]![0].key).toEqual({
+      pk: `USER#${validUser.userId}`,
+    });
+  });
+});
+
+describe("KEY-6: bare field name documented as a key template", () => {
+  it.todo("the README's 'Simple field' format matches what parseTemplate does with a bare name");
 });
 
 describe("EXP-2: user expressionNames/expressionValues overwriting generated aliases", () => {

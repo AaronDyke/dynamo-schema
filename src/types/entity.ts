@@ -124,9 +124,11 @@ export type InferEntityType<E> =
  */
 export type EntityKeyFields<E> =
   E extends EntityDefinition<infer _S, infer _T, infer PK, infer SK>
-    ? SK extends string
-      ? ResolveKeyFields<PK> | ResolveKeyFields<SK>
-      : ResolveKeyFields<PK>
+    ? // `[SK] extends [never]` (no sortKey) must not distribute, or the whole
+      // result collapses to `never` and the key input type becomes `{}`.
+      [SK] extends [never]
+      ? ResolveKeyFields<PK>
+      : ResolveKeyFields<PK> | ResolveKeyFields<SK>
     : never;
 
 /**

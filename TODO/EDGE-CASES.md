@@ -22,7 +22,7 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [ENT-1](#ent-1-defineentity-without-a-sortkey-does-not-type-check) | `defineEntity` without a `sortKey` doesn't type-check | **High** |
+| [KEY-6](#key-6-readme-says-a-bare-field-name-is-a-key-template) | README says a bare field name (`"userId"`) is a key template; it's a static literal | **High** |
 | [EXP-2](#exp-2-user-supplied-expressionnames--expressionvalues-can-overwrite-generated-aliases) | User `expressionNames`/`expressionValues` can overwrite generated aliases | **High** |
 | [EXP-3](#exp-3-filter-paths-with-dots-target-a-literal-top-level-attribute) | Filter paths with dots silently target a literal top-level attribute | **High** |
 | [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
@@ -70,23 +70,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. Medium and Low entries have no regression tests yet.
 
 ---
-
-## Entity definition
-
-### ENT-1. `defineEntity` without a `sortKey` does not type-check
-**Severity:** High · **Where:** `defineEntity` (`src/core/define-entity.ts`)
-
-**Behaviour:** `SK` defaults to `never`, and the sort-key check is the conditional type `SK extends string ? … : unknown`. A conditional on a bare type parameter distributes, so with `SK = never` it evaluates to `never`, and the whole `config` parameter becomes `never`. Any entity that omits `sortKey` fails to compile, even on a table that has only a partition key:
-
-```ts
-const t = defineTable({ tableName: "T", partitionKey: { name: "pk", definition: "pk" } });
-defineEntity({ name: "E", schema: z.object({ id: z.string() }), table: t, partitionKey: "E#{{id}}" });
-// error TS2345: … is not assignable to parameter of type 'never'.
-```
-
-At runtime it works. Every existing test entity sets a `sortKey`, so the suite never caught it.
-
-**Fix:** Wrap the check so it doesn't distribute: `[SK] extends [never] ? unknown : (… existing check …)`. Add a type-level test for an entity with no sort key.
 
 ## Expressions & aliasing
 
@@ -149,6 +132,13 @@ At runtime it works. Every existing test entity sets a `sortKey`, so the suite n
 **Behaviour:** Values pass through `String()`, so `false` becomes `"false"`, `0` becomes `"0"`, and an object becomes `"[object Object]"`.
 
 **Fix:** Accept only `string | number | bigint`, and return a `"key"` error for anything else.
+
+### KEY-6. README says a bare field name is a key template
+**Severity:** High · **Where:** README "Key definition formats" table, `parseTemplate`
+
+**Behaviour:** The README lists `"userId"` as a "Simple field" format that "uses the field value directly (no `{{}}` needed)". The code doesn't do that: `parseTemplate` treats any string without `{{…}}` as a static literal (`isSimple: true`). An entity defined with `partitionKey: "userId"` writes every item with the key `"userId"`, so each put overwrites the previous item.
+
+**Fix:** Either remove the README row (and point to `"{{userId}}"`), or make a bare name that matches a schema field act as a field reference. The second option is ambiguous with static values such as `"PROFILE"`, so removing the row is the safer choice.
 
 ---
 
@@ -438,6 +428,7 @@ At runtime it works. Every existing test entity sets a `sortKey`, so the suite n
 | §6.1 | GSI query used the table's sort key name | `dc25093`: `resolveQueryKeyInfo` resolves the index's own key names |
 | §7.2 | Unprocessed batch items discarded after one retry | `b436a0b`: exponential-backoff retry, and an error once retries are exhausted |
 | EXP-1 | Attribute names containing `-`, `.`, spaces and similar produced invalid placeholders in update, projection (query, scan, get, transactGet, batchGet) and remove-ttl expressions. Includes the alias half of BAT-5. | Positional placeholders (`#u0`/`:u0`, `#p0`, `#ttl`) and a shared `buildProjection` helper. Covered by the EXP-1 tests in `src/__tests__/edge-cases.test.ts`. |
+| ENT-1 | `defineEntity` without a `sortKey` didn't type-check: the sort-key check distributed over the default `SK = never`, collapsing `config` to `never`. The same bug in `EntityKeyFields` made the key input type `{}` for such entities, so `get({})` type-checked. | Both conditionals wrapped as `[SK] extends [never]`. Covered by the ENT-1 tests in `src/__tests__/edge-cases.test.ts` (type-level checks run under `npm run type-check`). |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

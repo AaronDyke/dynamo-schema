@@ -178,6 +178,27 @@ const userEntity = defineEntity({
 });
 ```
 
+**Entities without a sort key:**
+
+On a table with only a partition key, omit `sortKey`. Key inputs then require only the partition key fields:
+
+```typescript
+const sessionsTable = defineTable({
+  tableName: "Sessions",
+  partitionKey: { name: "pk", definition: "pk" },
+});
+
+const sessionEntity = defineEntity({
+  name: "Session",
+  schema: z.object({ sessionId: z.string(), userId: z.string() }),
+  table: sessionsTable,
+  partitionKey: "SESSION#{{sessionId}}",
+});
+
+const sessions = client.entity(sessionEntity);
+await sessions.get({ sessionId: "abc" }); // key input type: { sessionId: string }
+```
+
 **Key definition formats:**
 
 | Format | Example | Description |
