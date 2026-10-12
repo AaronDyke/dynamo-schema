@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [EXP-3](#exp-3-filter-paths-with-dots-target-a-literal-top-level-attribute) | Filter paths with dots silently target a literal top-level attribute | **High** |
 | [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
 | [MAR-1](#mar-1-date-map-and-class-instances-marshal-to-an-empty-map) | `Date`, `Map` and class instances marshal to an empty map | **High** |
 | [PUT-1](#put-1-sparse-gsis-are-impossible) | Sparse GSIs are impossible: a missing index field fails the whole put | **High** |
@@ -70,13 +69,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 ---
 
 ## Expressions & aliasing
-
-### EXP-3. Filter paths with dots target a literal top-level attribute
-**Severity:** High · **Where:** `src/operations/filter.ts`
-
-**Behaviour:** Filter nodes map `#f{n}` → `path` as one name. `{ op: "eq", path: "address.city", ... }` therefore compares against a top-level attribute literally named `address.city`. The expression is valid, so the filter silently matches nothing. The typed builder limits `path` to `keyof T`, but raw `FilterNode` objects and string-keyed entities accept any string.
-
-**Fix:** Support segmented paths (for example `["address", "city"]`, aliased `#f0.#f1`), or reject paths containing `.` and `[`. Update and projection names also treat a dot as part of the attribute name, which the README now documents; unlike filters, they don't let you write a nested path by accident.
 
 ### EXP-4. `needsAlias` ignores names starting with a digit
 **Severity:** Low · **Where:** `needsAlias`, `buildExpressionAttributeNames` (exported utilities)
@@ -415,6 +407,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | ENT-1 | `defineEntity` without a `sortKey` didn't type-check: the sort-key check distributed over the default `SK = never`, collapsing `config` to `never`. The same bug in `EntityKeyFields` made the key input type `{}` for such entities, so `get({})` type-checked. | Both conditionals wrapped as `[SK] extends [never]`. Covered by the ENT-1 tests in `src/__tests__/edge-cases.test.ts` (type-level checks run under `npm run type-check`). |
 | KEY-6 | The README documented `"userId"` (no `{{}}`) as a field reference; `parseTemplate` treats it as a static literal, so every item would share one key. | README row removed and replaced with the `"{{userId}}"` form plus a warning that a bare name is always static. Code unchanged. |
 | EXP-2 | User `expressionNames`/`expressionValues` were spread over generated placeholders, so a matching key (for example `#u0`) silently redirected the expression to another attribute or value. | New `mergeExpressionMaps` helper, used by put, update, delete, query, scan and transactWrite updates: a conflicting key returns a `"validation"` error, and an identical duplicate is allowed. Covered by the EXP-2 tests. |
+| EXP-3 | Filter paths with dots (`"address.city"`) compiled to a single alias, so a filter meant for a nested attribute silently matched nothing, and there was no way to address nested attributes. | Filter paths now accept a tuple (`["address", "city"]`, `["tags", 0]`) that compiles to one alias per segment (`#f0_0.#f0_1`). A string path stays a single attribute name, consistent with updates and projections; the README documents both. Covered by the EXP-3 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

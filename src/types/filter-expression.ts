@@ -23,28 +23,54 @@ export type DynamoAttributeType =
   | "BOOL";
 
 /**
+ * Identifies the attribute a filter/condition applies to.
+ *
+ * - A **string** is a single top-level attribute name, used as-is. A `.` is
+ *   part of the name: `"address.city"` is an attribute literally named
+ *   `address.city`, not a nested path.
+ * - A **tuple** is a path into nested maps and lists: string segments are map
+ *   keys and number segments are list indexes. `["address", "city"]` compiles
+ *   to `#f0_0.#f0_1`, and `["tags", 0]` to `#f0_0[0]`.
+ */
+export type AttributePath = string | readonly [string, ...(string | number)[]];
+
+/**
+ * The path argument accepted by the typed {@link FilterBuilder}: a top-level
+ * key of `T`, or a nested path tuple whose first segment is a key of `T`.
+ */
+export type FilterPath<T> =
+  | (string & keyof T)
+  | readonly [string & keyof T, ...(string | number)[]];
+
+/**
+ * The value type for a {@link FilterPath}: the attribute's type for a
+ * top-level key, and `unknown` for a nested path.
+ */
+export type FilterPathValue<T, P> = P extends keyof T ? T[P] : unknown;
+
+/**
  * A leaf comparison node — a single condition comparing an attribute to a value.
  */
 export type FilterLeafNode =
-  | { readonly op: "eq"; readonly path: string; readonly value: unknown }
-  | { readonly op: "ne"; readonly path: string; readonly value: unknown }
-  | { readonly op: "lt"; readonly path: string; readonly value: unknown }
-  | { readonly op: "lte"; readonly path: string; readonly value: unknown }
-  | { readonly op: "gt"; readonly path: string; readonly value: unknown }
-  | { readonly op: "gte"; readonly path: string; readonly value: unknown }
+  | { readonly op: "eq"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "ne"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "lt"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "lte"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "gt"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "gte"; readonly path: AttributePath; readonly value: unknown }
   | {
       readonly op: "between";
-      readonly path: string;
+      readonly path: AttributePath;
       readonly lo: unknown;
       readonly hi: unknown;
     }
-  | { readonly op: "beginsWith"; readonly path: string; readonly value: unknown }
-  | { readonly op: "contains"; readonly path: string; readonly value: unknown }
+  | { readonly op: "beginsWith"; readonly path: AttributePath; readonly value: unknown }
+  | { readonly op: "contains"; readonly path: AttributePath; readonly value: unknown }
   | { readonly op: "attributeExists"; readonly path: string }
   | { readonly op: "attributeNotExists"; readonly path: string }
   | {
       readonly op: "attributeType";
-      readonly path: string;
+      readonly path: AttributePath;
       readonly type: DynamoAttributeType;
     };
 
@@ -92,40 +118,40 @@ export interface CompiledFilter {
  */
 export interface FilterBuilder<T> {
   /** `attr = value` */
-  readonly eq: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly eq: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr <> value` */
-  readonly ne: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly ne: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr < value` */
-  readonly lt: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly lt: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr <= value` */
-  readonly lte: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly lte: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr > value` */
-  readonly gt: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly gt: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr >= value` */
-  readonly gte: <K extends string & keyof T>(path: K, value: T[K]) => FilterNode;
+  readonly gte: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) => FilterNode;
   /** `attr BETWEEN lo AND hi` */
-  readonly between: <K extends string & keyof T>(
-    path: K,
-    lo: T[K],
-    hi: T[K],
+  readonly between: <P extends FilterPath<T>>(
+    path: P,
+    lo: FilterPathValue<T, P>,
+    hi: FilterPathValue<T, P>,
   ) => FilterNode;
   /** `begins_with(attr, prefix)` */
-  readonly beginsWith: <K extends string & keyof T>(
-    path: K,
-    value: T[K],
+  readonly beginsWith: <P extends FilterPath<T>>(
+    path: P,
+    value: FilterPathValue<T, P>,
   ) => FilterNode;
   /** `contains(attr, operand)` */
-  readonly contains: <K extends string & keyof T>(
-    path: K,
-    value: T[K],
+  readonly contains: <P extends FilterPath<T>>(
+    path: P,
+    value: FilterPathValue<T, P>,
   ) => FilterNode;
   /** `attribute_exists(attr)` */
-  readonly attributeExists: <K extends string & keyof T>(path: K) => FilterNode;
+  readonly attributeExists: <P extends FilterPath<T>>(path: P) => FilterNode;
   /** `attribute_not_exists(attr)` */
-  readonly attributeNotExists: <K extends string & keyof T>(path: K) => FilterNode;
+  readonly attributeNotExists: <P extends FilterPath<T>>(path: P) => FilterNode;
   /** `attribute_type(attr, type)` */
-  readonly attributeType: <K extends string & keyof T>(
-    path: K,
+  readonly attributeType: <P extends FilterPath<T>>(
+    path: P,
     type: DynamoAttributeType,
   ) => FilterNode;
   /** `(cond1 AND cond2 AND ...)` — requires at least one condition */

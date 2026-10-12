@@ -24,7 +24,7 @@ import {
   executeTransactWrite,
   type TransactWriteRequestItem,
 } from "../operations/transact-write.js";
-import { createFilterBuilder } from "../operations/filter.js";
+import { createFilterBuilder, compileFilterNode } from "../operations/filter.js";
 import type { UpdateBuilder } from "../types/update-expression.js";
 import type { EntityKeyInput } from "../types/entity.js";
 import {
@@ -301,7 +301,42 @@ describe("EXP-2: user expressionNames/expressionValues overwriting generated ali
 });
 
 describe("EXP-3: filter paths containing dots", () => {
-  it.todo("a FilterNode path 'address.city' addresses the nested attribute or is rejected");
+  type Profile = { address: { city: string }; tags: string[]; "a.b": string };
+  const f = createFilterBuilder<Profile>();
+
+  it("a tuple path addresses the nested attribute with one alias per segment", () => {
+    const compiled = compileFilterNode(
+      f.and(f.eq(["address", "city"], "NYC"), f.attributeExists(["tags", 0])),
+    );
+
+    expect(compiled.expression).toBe(
+      "(#f0_0.#f0_1 = :f0 AND attribute_exists(#f1_0[0]))",
+    );
+    expect(compiled.expressionAttributeNames).toEqual({
+      "#f0_0": "address",
+      "#f0_1": "city",
+      "#f1_0": "tags",
+    });
+    expect(compiled.expressionAttributeValues).toEqual({ ":f0": "NYC" });
+  });
+
+  it("a string path containing a dot is one attribute name, as in updates and projections", () => {
+    const compiled = compileFilterNode(f.eq("a.b", "x"));
+
+    expect(compiled.expression).toBe("#f0 = :f0");
+    expect(compiled.expressionAttributeNames).toEqual({ "#f0": "a.b" });
+  });
+
+  it("type-checks nested paths against the first segment only", () => {
+    const typeChecks = (): void => {
+      f.eq(["address", "city"], "any value is allowed for nested paths");
+      // @ts-expect-error -- first segment must be a key of Profile
+      f.eq(["missing", "city"], "x");
+      // @ts-expect-error -- top-level value must match the attribute type
+      f.eq("tags", "not-an-array");
+    };
+    expect(typeChecks).toBeTypeOf("function");
+  });
 });
 
 describe("KEY-1: field values containing a template delimiter", () => {

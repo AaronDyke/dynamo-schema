@@ -85,6 +85,9 @@ export type {
   FilterInput,
   CompiledFilter,
   DynamoAttributeType,
+  AttributePath,
+  FilterPath,
+  FilterPathValue,
 } from "./types/filter-expression.js";
 
 // Marshalling (for users who need raw AttributeValue handling)

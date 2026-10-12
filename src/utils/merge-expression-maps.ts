@@ -44,7 +44,7 @@ export const mergeExpressionMaps = <V>(
       new Error(
         `${label} key "${conflict}" conflicts with a generated placeholder ` +
           `(generated: ${describe(generated[conflict])}, provided: ${describe(user![conflict])}). ` +
-          `Generated placeholders use the forms #pk, #sk, #u<n>, #p<n>, #f<n>, #ttl, :pk, :sk, :skLo, :skHi, :u<n> and :f<n>; choose a different key.`,
+          `Generated placeholders use the forms #pk, #sk, #u<n>, #p<n>, #f<n>, #f<n>_<m>, #ttl, :pk, :sk, :skLo, :skHi, :u<n> and :f<n>; choose a different key.`,
       ),
     );
   }

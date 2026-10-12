@@ -416,7 +416,7 @@ await users.query({
 // ProjectionExpression: "#p0, #p1"
 ```
 
-A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Generated placeholders use the forms `#pk`, `#sk`, `#u<n>`, `#p<n>`, `#f<n>`, `#ttl`, `:pk`, `:sk`, `:skLo`, `:skHi`, `:u<n>` and `:f<n>`. If one of your own `expressionNames` / `expressionValues` keys matches a generated placeholder but maps to something different, the operation returns a `"validation"` error instead of silently pointing the expression at the wrong attribute. Repeating a generated placeholder with the same value (for example `{ "#pk": "pk" }`) is allowed.
+A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Generated placeholders use the forms `#pk`, `#sk`, `#u<n>`, `#p<n>`, `#f<n>`, `#f<n>_<m>`, `#ttl`, `:pk`, `:sk`, `:skLo`, `:skHi`, `:u<n>` and `:f<n>`. If one of your own `expressionNames` / `expressionValues` keys matches a generated placeholder but maps to something different, the operation returns a `"validation"` error instead of silently pointing the expression at the wrong attribute. Repeating a generated placeholder with the same value (for example `{ "#pk": "pk" }`) is allowed.
 
 **Update with condition:**
 
@@ -616,6 +616,19 @@ await users.query({
 | `f.and(...conds)` | `(c1 AND c2 ...)` | |
 | `f.or(...conds)` | `(c1 OR c2 ...)` | |
 | `f.not(cond)` | `NOT (cond)` | |
+
+### Nested attributes
+
+A string path is always a single attribute name, even if it contains a dot: `f.eq("address.city", "NYC")` matches an attribute literally named `address.city`. To reach into nested maps and lists, pass the path as an array. String segments are map keys and numbers are list indexes:
+
+```typescript
+const f = createFilterBuilder<User>();
+
+f.eq(["address", "city"], "NYC");      // #f0_0.#f0_1 = :f0
+f.attributeExists(["tags", 0]);        // attribute_exists(#f0_0[0])
+```
+
+The first segment is type-checked against your item type; the value of a nested path is typed as `unknown`.
 
 ### Condition expressions in put / delete / update
 
