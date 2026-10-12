@@ -8,10 +8,17 @@ import { type ParsedTemplate } from "./template-parser.js";
 /**
  * Builds a key value string from entity data using a parsed template.
  *
+ * A field value may not contain the literal that directly follows it in the
+ * template. Otherwise two different items could build the same key (with
+ * `"{{orgId}}#{{userId}}"`, `{ orgId: "a#b", userId: "c" }` and
+ * `{ orgId: "a", userId: "b#c" }` both give `"a#b#c"`), and the key could not
+ * be split back into its fields. A field at the end of the template has no
+ * such restriction.
+ *
  * @param template - A parsed key template
  * @param data - The entity data record containing field values
- * @returns A Result containing the built key string, or an error if
- *   required fields are missing.
+ * @returns A Result containing the built key string, or an error if a
+ *   required field is missing or a field value contains its delimiter.
  *
  * @example
  * ```ts
@@ -26,7 +33,7 @@ export const buildKeyValue = (
 ): Result<string, Error> => {
   const parts: string[] = [];
 
-  for (const segment of template.segments) {
+  for (const [i, segment] of template.segments.entries()) {
     if (segment.type === "literal") {
       parts.push(segment.value);
     } else {
@@ -38,7 +45,18 @@ export const buildKeyValue = (
           ),
         );
       }
-      parts.push(String(value));
+      const text = String(value);
+      const next = template.segments[i + 1];
+      if (next?.type === "literal" && text.includes(next.value)) {
+        return err(
+          new Error(
+            `Key field "${segment.name}" value "${text}" contains the delimiter "${next.value}" ` +
+              `that follows it in the key template, which would make the key ambiguous. ` +
+              `Use a delimiter that cannot appear in this field's values.`,
+          ),
+        );
+      }
+      parts.push(text);
     }
   }
 

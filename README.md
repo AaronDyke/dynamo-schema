@@ -178,14 +178,50 @@ const userEntity = defineEntity({
 });
 ```
 
+**Sparse indexes:**
+
+An item is written to an index only when it has the fields that index's key templates use. If **all** of them are absent (`undefined` or `null`), the index key attributes are left off and the item doesn't appear in the index. If only some are present, the write returns a `"key"` error. This applies to `put`, `batchWrite` and `transactWrite`.
+
+```typescript
+// indexes: { gsi1: { partitionKey: "EMAIL#{{email}}", sortKey: "TEAM#{{team}}" } }
+await users.put({ userId: "1" });                              // not in gsi1
+await users.put({ userId: "2", email: "a@b.c", team: "red" }); // in gsi1
+await users.put({ userId: "3", email: "a@b.c" });              // "key" error: team is missing
+```
+
+**Entities without a sort key:**
+
+On a table with only a partition key, omit `sortKey`. Key inputs then require only the partition key fields:
+
+```typescript
+const sessionsTable = defineTable({
+  tableName: "Sessions",
+  partitionKey: { name: "pk", definition: "pk" },
+});
+
+const sessionEntity = defineEntity({
+  name: "Session",
+  schema: z.object({ sessionId: z.string(), userId: z.string() }),
+  table: sessionsTable,
+  partitionKey: "SESSION#{{sessionId}}",
+});
+
+const sessions = client.entity(sessionEntity);
+await sessions.get({ sessionId: "abc" }); // key input type: { sessionId: string }
+```
+
 **Key definition formats:**
 
 | Format | Example | Description |
 |--------|---------|-------------|
 | Template | `"USER#{{userId}}"` | Substitutes `userId` field from entity data |
 | Multi-field template | `"{{orgId}}#{{date}}"` | Combines multiple fields |
+| Single field | `"{{userId}}"` | The key is exactly the `userId` field value |
 | Static value | `"PROFILE"` | Uses the literal string as-is |
-| Simple field | `"userId"` | Uses the field value directly (no `{{}}` needed when the entire key is one field) |
+
+A key definition without `{{…}}` is always a static value, even if it matches a field name: `partitionKey: "userId"` gives every item the key `"userId"`. To use a field's value as the whole key, write `"{{userId}}"`.
+
+A field value may not contain the text that follows it in the template. With `"{{orgId}}#{{userId}}"`, an `orgId` of `"a#b"` returns a `"key"` error, because `{ orgId: "a#b", userId: "c" }` and `{ orgId: "a", userId: "b#c" }` would otherwise build the same key and overwrite each other. The last field in a template has no such restriction. Pick delimiters that can't appear in your field values.
 
 ### TTL Configuration
 
@@ -216,7 +252,7 @@ const sessionEntity = defineEntity({
   partitionKey: "SESSION#{{sessionId}}",
   sortKey: "METADATA",
   ttl: {
-    // Auto-inject this TTL value on every put (30 days from now)
+    // Auto-inject this TTL value on every put that has no TTL value (30 days from now)
     defaultTtlSeconds: 60 * 60 * 24 * 30,
     // Refresh the TTL on every update (sliding expiry)
     autoUpdateTtlSeconds: 60 * 60 * 24 * 30,
@@ -227,6 +263,11 @@ const sessionEntity = defineEntity({
 Both fields are optional and independent. For example, you can set `autoUpdateTtlSeconds` without `defaultTtlSeconds` if you want sliding expiry on updates but not automatic injection on creation.
 
 The TTL value injected is always `Math.floor(Date.now() / 1000) + <seconds>` (Unix epoch seconds, as required by DynamoDB).
+
+- `defaultTtlSeconds` applies to `put` and to put requests in `batchWrite` and `transactWrite`. It is only used when the item doesn't already have a value for the TTL attribute, so an explicit expiry you pass is kept.
+- `autoUpdateTtlSeconds` is skipped when the update itself already sets or removes the TTL attribute.
+
+**Generated attributes and your schema:** the library writes the table's key attributes, the index key attributes and the TTL attribute onto each item. If your item has a field with the same name as a key or index attribute (for example a schema field called `pk`) and its value differs from the generated one, the write returns a `"key"` error instead of silently overwriting your value. A field that already holds the generated value is accepted, so an item read back with its key attributes can be written again.
 
 ### Type Inference
 
@@ -370,10 +411,30 @@ await users.update(
     .set("name", "Alice Smith"),
 );
 // Produces:
-// SET #sne0_createdAt = if_not_exists(#sne0_createdAt, :sne0_createdAt),
-//     #s0_updatedAt = :s0_updatedAt,
-//     #s1_name = :s1_name
+// SET #u0 = :u0, #u1 = :u1, #u2 = if_not_exists(#u2, :u2)
+// with ExpressionAttributeNames { "#u0": "updatedAt", "#u1": "name", "#u2": "createdAt" }
 ```
+
+**Attribute names and placeholders:**
+
+Every attribute the builder touches gets a positional placeholder (`#u0` / `:u0`, `#u1` / `:u1`, ...). Projections use `#p0`, `#p1`, ... and filter/condition builders use `#f0` / `:f0`. Any legal DynamoDB attribute name therefore works, including names containing `-`, `.` or spaces:
+
+```typescript
+await users.update(
+  { userId: "123" },
+  (u) => u.set("display-name", "Alice").remove("last login"),
+);
+// SET #u0 = :u0 REMOVE #u1
+// with ExpressionAttributeNames { "#u0": "display-name", "#u1": "last login" }
+
+await users.query({
+  partitionKey: { userId: "123" },
+  options: { projection: ["user-id", "first name"] },
+});
+// ProjectionExpression: "#p0, #p1"
+```
+
+A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Generated placeholders use the forms `#pk`, `#sk`, `#u<n>`, `#p<n>`, `#f<n>`, `#f<n>_<m>`, `#ttl`, `:pk`, `:sk`, `:skLo`, `:skHi`, `:u<n>` and `:f<n>`. If one of your own `expressionNames` / `expressionValues` keys matches a generated placeholder but maps to something different, the operation returns a `"validation"` error instead of silently pointing the expression at the wrong attribute. Repeating a generated placeholder with the same value (for example `{ "#pk": "pk" }`) is allowed.
 
 **Update with condition:**
 
@@ -574,6 +635,19 @@ await users.query({
 | `f.or(...conds)` | `(c1 OR c2 ...)` | |
 | `f.not(cond)` | `NOT (cond)` | |
 
+### Nested attributes
+
+A string path is always a single attribute name, even if it contains a dot: `f.eq("address.city", "NYC")` matches an attribute literally named `address.city`. To reach into nested maps and lists, pass the path as an array. String segments are map keys and numbers are list indexes:
+
+```typescript
+const f = createFilterBuilder<User>();
+
+f.eq(["address", "city"], "NYC");      // #f0_0.#f0_1 = :f0
+f.attributeExists(["tags", 0]);        // attribute_exists(#f0_0[0])
+```
+
+The first segment is type-checked against your item type; the value of a nested path is typed as `unknown`.
+
 ### Condition expressions in put / delete / update
 
 The same `FilterInput` type is accepted for `condition` in put, delete, and update:
@@ -677,7 +751,16 @@ await client.batchWrite(requests, {
 });
 ```
 
-If items remain unprocessed after all attempts, the operation returns a `DynamoError` (rather than silently discarding them).
+Requests are sent in the order you pass them. Chunks sent before a failure stay written, so a failed batch can be partly applied. The error (a `BatchWriteError`) lists exactly which requests were not confirmed written in `error.unprocessed`, in your original order. This covers retries running out, an AWS error, and validation or key errors before anything was sent (then it's every request):
+
+```typescript
+const result = await client.batchWrite(requests);
+if (!result.success) {
+  console.error(result.error.message);
+  // Retry only what wasn't written
+  const retry = await client.batchWrite(result.error.unprocessed);
+}
+```
 
 ### Batch Get
 
@@ -704,6 +787,22 @@ if (result.success) {
   }
 }
 ```
+
+**Several entities on one table:**
+
+In a single-table design, request each entity separately; every returned item is matched to the entity whose key it has, and every requested entity gets an array (empty if nothing was found):
+
+```typescript
+const result = await client.batchGet([
+  { entity: userEntity, keys: [{ userId: "1" }], projection: ["name"] },
+  { entity: orderEntity, keys: [{ userId: "1", orderId: "o1" }], projection: ["total"] },
+]);
+// result.data.responses => { User: [{ name: "Ann" }], Order: [{ total: 42 }] }
+```
+
+Results are grouped by entity `name`, so two different entities in one `batchGet` call must have different names; otherwise the call returns a `"validation"` error. Passing the same entity in several requests is fine.
+
+DynamoDB allows one projection and one `consistentRead` setting per table in a request, so entities sharing a table share them: the read is consistent if any of them asks for it, and DynamoDB returns the union of their projections plus the key attributes (or full items if any of them has no projection). Each entity's items are then trimmed back to its own projection.
 
 **Custom retry options:**
 
@@ -931,6 +1030,15 @@ const adapter = createSDKv3Adapter(ddbClient, {
 });
 ```
 
+With the raw adapters (SDK v2 or v3), only plain objects are stored as maps. A `Date`, `Map`, `ArrayBuffer` or class instance anywhere in an item returns a `"marshalling"` error instead of being silently stored as an empty map, so convert those values first:
+
+```typescript
+await users.put({ ...user, createdAt: new Date().toISOString() }); // not new Date()
+await users.put({ ...user, settings: Object.fromEntries(settingsMap) }); // not settingsMap
+```
+
+The DocumentClient adapters pass items to the AWS SDK, which applies its own marshalling rules.
+
 ### AWS SDK v2 with DocumentClient
 
 ```typescript
@@ -983,12 +1091,18 @@ Hooks are defined in `defineEntity` and are **run by default** on every matching
 
 ### Available hooks
 
-| Hook | Operation | When it runs | Can abort? |
-|------|-----------|--------------|-----------|
-| `beforePut` | `put` | After schema validation, before key building | Yes — throw to abort |
-| `beforeUpdate` | `update` | After builder runs, before TTL injection | Yes — throw to abort |
-| `afterGet` | `get` | After item is fetched and unmarshalled | Yes — throw to abort |
-| `beforeDelete` | `delete` | Before the DynamoDB call | Yes — throw to abort |
+| Hook | Operations | When it runs | Can abort? |
+|------|------------|--------------|-----------|
+| `beforePut` | `put`, put requests in `batchWrite` and `transactWrite` | After schema validation, before key building | Yes — throw to abort |
+| `beforeUpdate` | `update`, update requests in `transactWrite` | After builder runs, before TTL injection | Yes — throw to abort |
+| `afterGet` | `get`, `query`, `scan`, `batchGet`, `transactGet` | After items are fetched and unmarshalled | Yes — throw to abort |
+| `beforeDelete` | `delete`, delete requests in `batchWrite` and `transactWrite` | Before the DynamoDB call | Yes — throw to abort |
+
+In `batchWrite` and `transactWrite`, every `before*` hook runs before anything is sent, so a hook that throws aborts the whole call and nothing is written.
+
+`afterGet` on lists (`query`, `scan`, `batchGet`) runs once per item. An item the hook maps to `undefined` is left out of the results, the same way `get` treats `undefined` as "not found" — useful for hiding soft-deleted items. `count` reflects the items actually returned. `transactGet` keeps one result per request and, like `get`, also calls `afterGet(undefined)` for an item that wasn't found.
+
+`skipHooks: true` is accepted by every operation's options, including `batchWrite`, `batchGet`, `transactWrite` and `transactGet` (which now takes an options argument).
 
 ### Auto-inject timestamps
 

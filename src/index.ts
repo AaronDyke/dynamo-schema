@@ -49,7 +49,7 @@ export type { UpdateOptions } from "./operations/update.js";
 export type { EntityQueryInput, SortKeyCondition, PartitionKeyCondition } from "./operations/query.js";
 
 // Batch operation types
-export type { BatchPutRequest, BatchDeleteRequest, BatchWriteRequestItem, BatchWriteOptions } from "./operations/batch-write.js";
+export type { BatchPutRequest, BatchDeleteRequest, BatchWriteRequestItem, BatchWriteOptions, BatchWriteError } from "./operations/batch-write.js";
 export type { BatchGetEntityRequest, BatchGetResult, BatchGetOptions } from "./operations/batch-get.js";
 
 // Retry utilities
@@ -57,7 +57,7 @@ export type { RetryOptions } from "./utils/retry.js";
 
 // Transaction operation types
 export type { TransactPutRequest, TransactDeleteRequest, TransactUpdateRequest, TransactConditionCheckRequest, TransactWriteRequestItem, TransactWriteOptions } from "./operations/transact-write.js";
-export type { TransactGetEntityRequest, TransactGetResult } from "./operations/transact-get.js";
+export type { TransactGetEntityRequest, TransactGetResult, TransactGetOptions } from "./operations/transact-get.js";
 
 // Result type and helpers
 export { type Result, ok, err, mapResult, flatMapResult } from "./types/common.js";
@@ -85,6 +85,9 @@ export type {
   FilterInput,
   CompiledFilter,
   DynamoAttributeType,
+  AttributePath,
+  FilterPath,
+  FilterPathValue,
 } from "./types/filter-expression.js";
 
 // Marshalling (for users who need raw AttributeValue handling)

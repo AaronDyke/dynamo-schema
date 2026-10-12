@@ -11,9 +11,11 @@ import { createDynamoError } from "../types/operations.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
+import { buildProjection } from "../utils/expression-names.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
+import { runAfterGetOnList } from "../utils/run-hook.js";
 
 /**
  * Executes a Scan operation for the given entity.
@@ -31,33 +33,32 @@ export const executeScan = async <
   options?: ScanOptions,
 ): Promise<Result<ScanResult<StandardSchemaV1.InferOutput<S>>, DynamoError>> => {
   // 1. Build projection expression
-  let projectionExpression: string | undefined;
-  const projNames: Record<string, string> = {};
-  if (options?.projection && options.projection.length > 0) {
-    const projParts: string[] = [];
-    for (const attr of options.projection) {
-      const alias = aliasAttributeName(`proj_${attr}`);
-      projNames[alias] = attr;
-      projParts.push(alias);
-    }
-    projectionExpression = projParts.join(", ");
-  }
+  const projection = buildProjection(options?.projection);
 
   // 2. Resolve filter expression (string, FilterNode, or callback)
   const resolvedFilter = resolveFilterInput(options?.filter);
 
   // 3. Merge expression attribute names
-  const mergedNames: Record<string, string> = {
-    ...projNames,
-    ...resolvedFilter.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...projection?.names, ...resolvedFilter.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
   // 4. Marshall expression values if using raw adapter
-  let exprValues: Record<string, unknown> = {
-    ...resolvedFilter.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    resolvedFilter.expressionAttributeValues,
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  let exprValues: Record<string, unknown> = mergedValuesResult.data;
   let startKey = options?.startKey;
 
   if (adapter.isRaw) {
@@ -100,7 +101,7 @@ export const executeScan = async <
       limit: options?.limit,
       exclusiveStartKey: startKey,
       consistentRead: options?.consistentRead,
-      projectionExpression,
+      projectionExpression: projection?.expression,
     });
   } catch (cause) {
     return err(
@@ -132,10 +133,20 @@ export const executeScan = async <
     }
   }
 
+  // Run afterGet on each item (unless skipped); items mapped to undefined are dropped
+  const hooks = entity.hooks;
+  const hooked = await runAfterGetOnList(
+    !options?.skipHooks && hooks?.afterGet
+      ? (item: StandardSchemaV1.InferOutput<S> | undefined) => hooks.afterGet!(item)
+      : undefined,
+    items,
+  );
+  if (!hooked.success) return err(hooked.error);
+
   return ok(
     Object.freeze({
-      items: Object.freeze(items),
-      count: result.count,
+      items: Object.freeze(hooked.data),
+      count: hooked.data.length,
       lastKey: result.lastEvaluatedKey,
     }),
   );

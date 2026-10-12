@@ -51,16 +51,18 @@ export const defineEntity = <
       : {
           _pkError: `Partition key template references fields not in schema: ${string & ValidateKeyFields<PK, string & keyof StandardSchemaV1.InferOutput<S>>}`;
         }) &
-    (SK extends string
-      ? ValidateKeyFields<
-          SK,
-          string & keyof StandardSchemaV1.InferOutput<S>
-        > extends true
+    // `[SK] extends [never]` stops the check from distributing over the
+    // default `never` (no sortKey), which would collapse `config` to `never`.
+    ([SK] extends [never]
+      ? unknown
+      : ValidateKeyFields<
+            SK,
+            string & keyof StandardSchemaV1.InferOutput<S>
+          > extends true
         ? unknown
         : {
             _skError: `Sort key template references fields not in schema: ${string & ValidateKeyFields<SK, string & keyof StandardSchemaV1.InferOutput<S>>}`;
-          }
-      : unknown),
+          }),
 ): EntityDefinition<S, T, PK, SK> =>
   Object.freeze({
     name: config.name,

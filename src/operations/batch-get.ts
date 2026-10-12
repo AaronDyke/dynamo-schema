@@ -20,6 +20,8 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { buildProjection } from "../utils/expression-names.js";
+import { runAfterGetOnList } from "../utils/run-hook.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
 /** Maximum items per BatchGetItem request. */
@@ -45,6 +47,12 @@ export interface BatchGetOptions {
    * (1 initial attempt + up to 3 retries at 100ms, 200ms, 400ms).
    */
   readonly retryOptions?: RetryOptions | undefined;
+  /**
+   * When `true`, entity `afterGet` hooks are bypassed. Otherwise each entity's
+   * `afterGet` runs on each of its items, and items it maps to `undefined` are
+   * left out. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /** Result for a batch get, keyed by entity name. */
@@ -88,25 +96,42 @@ const chunk = <T>(items: readonly T[], size: number): readonly (readonly T[])[] 
   return chunks;
 };
 
+/** Where a requested key's item belongs in the result. */
+interface KeyOwner {
+  readonly entityName: string;
+  /** The entity's own projection, used to trim items fetched with a wider one. */
+  readonly projection: readonly string[] | undefined;
+}
+
+/** Identifies an item by table and key values, to match returned items to requests. */
+const keyIdentity = (tableName: string, pk: unknown, sk: unknown): string =>
+  JSON.stringify([tableName, pk, sk ?? null]);
+
+/** Keeps only the projected attributes of an item. */
+const pickAttributes = (
+  item: Record<string, unknown>,
+  attributes: readonly string[],
+): Record<string, unknown> =>
+  Object.fromEntries(attributes.filter((a) => a in item).map((a) => [a, item[a]]));
+
 /**
- * Processes batch get responses and appends items to `allResponses`.
+ * Processes batch get responses and appends each item to its entity's list in
+ * `allResponses`. Items are matched to entities by their key attributes, so
+ * several entities can share a table.
  * Returns a DynamoError if unmarshalling fails.
  */
 const processResponses = (
   responses: Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
-  chunkKeys: ReadonlyArray<{ tableName: string; entityName: string; key: Record<string, unknown> }>,
+  owners: ReadonlyMap<string, KeyOwner>,
+  keyNames: ReadonlyMap<string, { readonly pk: string; readonly sk: string | undefined }>,
   allResponses: Record<string, Record<string, unknown>[]>,
   isRaw: boolean,
 ): DynamoError | undefined => {
   for (const [tableName, items] of Object.entries(responses)) {
-    const entityName =
-      chunkKeys.find((fk) => fk.tableName === tableName)?.entityName ?? tableName;
-
-    if (!allResponses[entityName]) {
-      allResponses[entityName] = [];
-    }
+    const names = keyNames.get(tableName);
 
     for (const rawItem of items) {
+      let item = rawItem as Record<string, unknown>;
       if (isRaw) {
         const unmarshalled = unmarshallItem(rawItem as AttributeMap);
         if (!unmarshalled.success) {
@@ -116,10 +141,18 @@ const processResponses = (
             unmarshalled.error,
           );
         }
-        allResponses[entityName]!.push(unmarshalled.data);
-      } else {
-        allResponses[entityName]!.push(rawItem as Record<string, unknown>);
+        item = unmarshalled.data;
       }
+
+      const owner = names
+        ? owners.get(
+            keyIdentity(tableName, item[names.pk], names.sk ? item[names.sk] : undefined),
+          )
+        : undefined;
+      const entityName = owner?.entityName ?? tableName;
+      const output = owner?.projection ? pickAttributes(item, owner.projection) : item;
+
+      (allResponses[entityName] ??= []).push(output);
     }
   }
   return undefined;
@@ -132,6 +165,8 @@ const processResponses = (
  * - When DynamoDB returns `UnprocessedKeys`, retries them with exponential
  *   backoff (default: up to 3 retries at 100ms, 200ms, 400ms intervals).
  * - Returns a `DynamoError` if keys remain unprocessed after all retries.
+ * - Results are grouped by entity name; a `"validation"` error is returned if
+ *   two different entities in `requests` share a name.
  *
  * @param adapter - The SDK adapter
  * @param requests - Array of entity get requests
@@ -156,44 +191,76 @@ export const executeBatchGet = async (
   requests: readonly BatchGetEntityRequest[],
   options?: BatchGetOptions,
 ): Promise<Result<BatchGetResult, DynamoError>> => {
+  // 0. Results are keyed by entity name, so two different entities may not share one
+  const entitiesByName = new Map<string, EntityDefinition>();
+  for (const req of requests) {
+    const existing = entitiesByName.get(req.entity.name);
+    if (existing && existing !== req.entity) {
+      return err(
+        createDynamoError(
+          "validation",
+          `BatchGet: two different entities are both named "${req.entity.name}" ` +
+            `(tables "${existing.table.tableName}" and "${req.entity.table.tableName}"). ` +
+            `Results are grouped by entity name, so give each entity a unique name.`,
+        ),
+      );
+    }
+    entitiesByName.set(req.entity.name, req.entity);
+  }
+
   // 1. Build keys for each request and flatten into adapter format
-  type FlatKey = { tableName: string; entityName: string; key: Record<string, unknown> };
+  type FlatKey = { tableName: string; key: Record<string, unknown> };
   const flatKeys: FlatKey[] = [];
 
-  // Track per-table batch get config (projection, consistentRead)
-  const tableConfigs = new Map<
-    string,
-    { consistentRead?: boolean; projectionExpression?: string; expressionAttributeNames?: Record<string, string> }
-  >();
+  // Per-table settings. DynamoDB allows one projection and one ConsistentRead
+  // per table in a BatchGetItem request, so entities sharing a table share them:
+  // consistent if any entity asks for it, and the union of the projections
+  // (plus the key attributes, to match items back) unless any entity wants
+  // full items. Each entity's items are trimmed to its own projection later.
+  type TableSettings = {
+    consistentRead: boolean;
+    fullItems: boolean;
+    attributes: Set<string>;
+  };
+  const tableSettings = new Map<string, TableSettings>();
+  const keyNames = new Map<string, { pk: string; sk: string | undefined }>();
+  const owners = new Map<string, KeyOwner>();
+  // Every requested entity gets an array, even if none of its items exist.
+  const allResponses: Record<string, Record<string, unknown>[]> = {};
 
   for (const req of requests) {
-    const tableName = req.entity.table.tableName;
+    allResponses[req.entity.name] ??= [];
+    const table = req.entity.table;
+    const tableName = table.tableName;
+    const projection = req.projection && req.projection.length > 0 ? req.projection : undefined;
 
-    // Build projection for this entity's table
-    if (req.projection && req.projection.length > 0 && !tableConfigs.has(tableName)) {
-      const names: Record<string, string> = {};
-      const parts: string[] = [];
-      for (const attr of req.projection) {
-        const alias = `#proj_${attr}`;
-        names[alias] = attr;
-        parts.push(alias);
-      }
-      tableConfigs.set(tableName, {
-        ...(req.consistentRead !== undefined ? { consistentRead: req.consistentRead } : {}),
-        projectionExpression: parts.join(", "),
-        expressionAttributeNames: names,
-      });
-    } else if (!tableConfigs.has(tableName)) {
-      tableConfigs.set(tableName, {
-        ...(req.consistentRead !== undefined ? { consistentRead: req.consistentRead } : {}),
-      });
-    }
+    const settings = tableSettings.get(tableName) ?? {
+      consistentRead: false,
+      fullItems: false,
+      attributes: new Set<string>(),
+    };
+    settings.consistentRead ||= req.consistentRead === true;
+    if (projection) projection.forEach((a) => settings.attributes.add(a));
+    else settings.fullItems = true;
+    tableSettings.set(tableName, settings);
+
+    const skName = req.entity.sortKey ? table.sortKey?.name : undefined;
+    keyNames.set(tableName, { pk: table.partitionKey.name, sk: table.sortKey?.name });
 
     for (const keyInput of req.keys) {
       const keyResult = buildKey(req.entity, keyInput);
       if (!keyResult.success) {
         return err(createDynamoError("key", keyResult.error.message, keyResult.error));
       }
+
+      owners.set(
+        keyIdentity(
+          tableName,
+          keyResult.data[table.partitionKey.name],
+          skName ? keyResult.data[skName] : undefined,
+        ),
+        { entityName: req.entity.name, projection },
+      );
 
       let key = keyResult.data;
       if (adapter.isRaw) {
@@ -206,12 +273,37 @@ export const executeBatchGet = async (
         key = marshalled.data;
       }
 
-      flatKeys.push({ tableName, entityName: req.entity.name, key });
+      flatKeys.push({ tableName, key });
     }
   }
 
+  const tableConfigs = new Map<
+    string,
+    { consistentRead?: boolean; projectionExpression?: string; expressionAttributeNames?: Record<string, string> }
+  >();
+  for (const [tableName, settings] of tableSettings) {
+    const names = keyNames.get(tableName)!;
+    const projection = settings.fullItems
+      ? undefined
+      : buildProjection([
+          ...new Set([
+            ...settings.attributes,
+            names.pk,
+            ...(names.sk ? [names.sk] : []),
+          ]),
+        ]);
+    tableConfigs.set(tableName, {
+      ...(settings.consistentRead ? { consistentRead: true } : {}),
+      ...(projection
+        ? {
+            projectionExpression: projection.expression,
+            expressionAttributeNames: { ...projection.names },
+          }
+        : {}),
+    });
+  }
+
   // 2. Chunk into groups of 100 and execute each chunk
-  const allResponses: Record<string, Record<string, unknown>[]> = {};
   const keyChunks = chunk(flatKeys, BATCH_GET_LIMIT);
   const maxAttempts = options?.retryOptions?.maxAttempts ?? 4;
 
@@ -254,7 +346,8 @@ export const executeBatchGet = async (
     // Process initial responses
     const initialError = processResponses(
       result.responses as Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
-      chunkKeys,
+      owners,
+      keyNames,
       allResponses,
       adapter.isRaw,
     );
@@ -282,7 +375,8 @@ export const executeBatchGet = async (
 
       const retryError = processResponses(
         retryResult.responses as Readonly<Record<string, ReadonlyArray<Record<string, unknown>>>>,
-        chunkKeys,
+        owners,
+        keyNames,
         allResponses,
         adapter.isRaw,
       );
@@ -301,6 +395,21 @@ export const executeBatchGet = async (
             `Consider increasing retryOptions.maxAttempts or checking for persistent throttling.`,
         ),
       );
+    }
+  }
+
+  // Run each entity's afterGet hook on its items (unless skipped)
+  if (!options?.skipHooks) {
+    for (const [name, entity] of entitiesByName) {
+      const hooks = entity.hooks;
+      if (!hooks?.afterGet) continue;
+      const hooked = await runAfterGetOnList(
+        (item: Record<string, unknown> | undefined) =>
+          hooks.afterGet!(item) as Record<string, unknown> | undefined,
+        allResponses[name] ?? [],
+      );
+      if (!hooked.success) return err(hooked.error);
+      allResponses[name] = hooked.data;
     }
   }
 

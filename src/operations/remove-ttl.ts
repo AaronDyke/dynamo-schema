@@ -14,7 +14,6 @@ import { createDynamoError } from "../types/operations.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
 
 /**
  * Removes the TTL attribute from an existing item.
@@ -76,7 +75,7 @@ export const executeRemoveTtl = async <
   }
 
   // 3. Build REMOVE expression for the TTL attribute
-  const nameAlias = aliasAttributeName(`r0_${ttlAttributeName}`);
+  const nameAlias = "#ttl";
   const updateExpression = `REMOVE ${nameAlias}`;
   const expressionAttributeNames: Record<string, string> = {
     [nameAlias]: ttlAttributeName,

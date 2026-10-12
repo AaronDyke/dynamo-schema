@@ -29,13 +29,16 @@ import type { EntityHooks } from "./hooks.js";
  */
 export interface EntityTtlConfig {
   /**
-   * When set, a TTL value will be automatically injected on every `put` operation.
+   * When set, a TTL value is automatically injected on every `put` (including
+   * put requests in `batchWrite` and `transactWrite`) whose item has no value
+   * for the TTL attribute.
    * The value is computed as `Math.floor(Date.now() / 1000) + defaultTtlSeconds`.
    */
   readonly defaultTtlSeconds?: number | undefined;
   /**
    * When set, the TTL attribute will be refreshed on every `update` operation
-   * (unless `skipAutoTtl: true` is passed in UpdateOptions).
+   * (unless `skipAutoTtl: true` is passed in UpdateOptions, or the update
+   * itself already sets or removes the TTL attribute).
    * The value is computed as `Math.floor(Date.now() / 1000) + autoUpdateTtlSeconds`.
    */
   readonly autoUpdateTtlSeconds?: number | undefined;
@@ -124,9 +127,11 @@ export type InferEntityType<E> =
  */
 export type EntityKeyFields<E> =
   E extends EntityDefinition<infer _S, infer _T, infer PK, infer SK>
-    ? SK extends string
-      ? ResolveKeyFields<PK> | ResolveKeyFields<SK>
-      : ResolveKeyFields<PK>
+    ? // `[SK] extends [never]` (no sortKey) must not distribute, or the whole
+      // result collapses to `never` and the key input type becomes `{}`.
+      [SK] extends [never]
+      ? ResolveKeyFields<PK>
+      : ResolveKeyFields<PK> | ResolveKeyFields<SK>
     : never;
 
 /**

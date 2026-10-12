@@ -1,366 +1,365 @@
 # Edge Cases
 
-This document catalogs known edge cases, surprising behaviours, and boundary conditions across the library. Cases are grouped by subsystem. Each entry notes the current behaviour and, where applicable, the risk or recommended mitigation.
+Known edge cases, surprising behaviours and boundary conditions in the library, with the fix for each.
+
+- **Verified against:** commit `9899d04` (1.0.0 release)
+- **Last verified:** 2026-10-12 (High entries re-checked after their fixes in PR #1)
+- **Keep it current:** when a fix lands, move its entry to [Resolved](#resolved) and record the PR. When you add an entry, include a reproduction, and add an `it.todo` (or a failing test) to `src/__tests__/edge-cases.test.ts` under a `describe` named after the entry ID; the fix turns it into a real test.
+
+## Severity rubric
+
+| Severity | Meaning |
+|----------|---------|
+| **High** | Silent data corruption or loss, wrong results with no error, or a common, legitimate input that cannot work at all. |
+| **Medium** | Fails with a late or misleading error (usually an AWS `ValidationException` instead of a library `Result` error), or an exception escapes the `Result` boundary. |
+| **Low** | Surprising but harmless behaviour, or behaviour that only needs documenting. |
+
+Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [Resolved](#resolved).
 
 ---
 
-## 1. Key Template Parser (`src/keys/template-parser.ts`)
+## Summary
 
-### 1.1 Empty string template
-**Input:** `parseTemplate("")`
-**Current behaviour:** `isSimple: true`, single literal segment with value `""`. `buildKeyValue` returns `""` — an empty string key.
-**Risk:** DynamoDB rejects empty-string partition key values with a service-level error. The library emits no library-level error; the failure surfaces only when the AWS call is made.
+| ID | Issue | Severity |
+|----|-------|----------|
+| [UPD-1](#upd-1-overlapping-paths-in-one-update) | Overlapping paths in one update are only rejected by AWS | Medium |
+| [UPD-2](#upd-2-add--delete-accept-any-value-type) | `add` / `delete` accept any value type | Medium |
+| [UPD-3](#upd-3-update-values-are-never-schema-validated) | Update values are never schema-validated | Medium |
+| [TXW-1](#txw-1-transactwrite-does-not-validate-empty-updates) | TransactWrite doesn't reject empty update expressions | Medium |
+| [TXW-2](#txw-2-no-100-item--4-mb-pre-check) | TransactWrite has no 100-item / 4 MB pre-check | Medium |
+| [TXW-3](#txw-3-no-auto-ttl-refresh-in-transactional-updates) | No auto-TTL refresh in transactional updates | Medium |
+| [TXW-4](#txw-4-two-operations-on-the-same-item) | Two operations on the same item are only rejected by AWS | Low |
+| [MAR-2](#mar-2-set-element-types-are-not-checked) | Set element types are not checked | Medium |
+| [MAR-3](#mar-3-number-range-and-precision-are-not-checked) | Number range and precision are not checked | Medium |
+| [MAR-4](#mar-4-circular-references-overflow-the-stack) | Circular references overflow the stack | Medium |
+| [MAR-5](#mar-5-undefined-is-dropped-at-the-root-but-stored-as-null-when-nested) | `undefined` is dropped at the root but stored as `NULL` when nested | Medium |
+| [MAR-6](#mar-6-sets-containing-an-empty-string-or-empty-binary) | Sets containing `""` or an empty binary pass through | Medium |
+| [BAT-4](#bat-4-duplicate-keys-in-one-batch-are-rejected-by-aws) | Duplicate keys in a batch are only rejected by AWS | Medium |
+| [QRY-1](#qry-1-sortkeycondition-silently-ignored-without-a-sort-key) | `sortKeyCondition` is silently ignored when there is no sort key | Medium |
+| [QRY-2](#qry-2-limit-and-pagination-semantics) | `limit` applies before the filter; a call returns a single page | Medium |
+| [QRY-3](#qry-3-limit-0-or-negative) | `limit` ≤ 0 is passed through to AWS | Low |
+| [QRY-4](#qry-4-reversed-between-bounds) | Reversed `between` bounds silently return nothing | Low |
+| [QRY-5](#qry-5-sort-key-values-are-not-templated) | Sort-key condition values are not templated | Low |
+| [QRY-6](#qry-6-isattributemap-inspects-only-the-first-value) | `isAttributeMap` inspects only the first value of `startKey` | Low |
+| [KEY-2](#key-2-empty-string-key-or-key-field) | Empty-string keys and key fields are not rejected | Medium |
+| [KEY-3](#key-3-malformed-placeholders-are-treated-as-literals) | Malformed placeholders (`{{}}`, `{{ id }}`) are treated as literals | Low |
+| [KEY-4](#key-4-duplicate-field-in-one-template) | A duplicate field in one template is not checked on extraction | Low |
+| [KEY-5](#key-5-non-string-field-values-are-stringified) | Non-string key field values are stringified (`false` → `"false"`) | Low |
+| [TTL-1](#ttl-1-autoupdatettlseconds-without-a-table-ttl) | `autoUpdateTtlSeconds` without a table TTL silently does nothing | Medium |
+| [TTL-2](#ttl-2-ttl-overflow-is-reported-as-a-marshalling-error) | TTL overflow is reported as a marshalling error | Low |
+| [TTL-3](#ttl-3-very-short-ttl-windows) | Very short TTL windows are not checked | Low |
+| [VAL-1](#val-1-a-throwing-schema-escapes-the-result-boundary) | A throwing or rejecting schema escapes the `Result` boundary | Medium |
+| [HOOK-2](#hook-2-beforeput-output-is-not-re-validated) | `beforePut` output is not re-validated | Medium |
+| [READ-1](#read-1-scan-returns-every-entity-in-the-table) | Scan returns every entity type in the table | Medium |
+| [MAR-7](#mar-7-unmarshalled-numbers-are-always-number) | Unmarshalled numbers are always `number`, so `bigint` doesn't round-trip | Low |
+| [EXP-4](#exp-4-needsalias-ignores-names-starting-with-a-digit) | `needsAlias` ignores names starting with a digit | Low |
+| [PUT-3](#put-3-put-returns-the-locally-built-item) | `put` returns the locally built item, including key attributes | Low |
 
-### 1.2 Empty placeholder `{{}}`
-**Input:** `parseTemplate("USER#{{}}")`
-**Current behaviour:** The regex `\{\{(\w+)\}\}` requires at least one word character, so `{{}}` is not matched. The entire string is treated as a static literal, **not** a field reference. No error is raised.
-**Risk:** Silent misconfiguration — the template compiles correctly but never interpolates a field.
-
-### 1.3 Whitespace inside placeholder `{{ userId }}`
-**Input:** `parseTemplate("USER#{{ userId }}")` (space inside braces)
-**Current behaviour:** Same as 1.2 — `\w+` does not match whitespace, so `{{ userId }}` is silently treated as a literal.
-**Risk:** Silent misconfiguration.
-
-### 1.4 Duplicate field names in one template
-**Input:** `parseTemplate("{{id}}#{{id}}")`
-**Current behaviour:** `fields` array contains `["id", "id"]` (duplicate). Key building works (both segments use the same value). Key extraction overwrites the first extracted value with the second — effectively returning a single `{ id: "..." }` result.
-**Risk:** The duplication is accepted silently; extraction produces a single field as if there were no duplicate.
-
-### 1.5 Field value containing the delimiter string
-**Input:** Template `"{{orgId}}#{{userId}}"`, `orgId = "ORG#CHILD"`
-**Built key:** `"ORG#CHILD#userId123"`
-**Extraction:** `indexOf("#", 0)` finds the `#` at position 3 (inside `orgId`'s value), so `orgId` is extracted as `"ORG"` instead of `"ORG#CHILD"`.
-**Risk:** Silent data corruption when field values happen to contain the delimiter. There is no way to escape delimiters. Use delimiters that cannot appear in field values (e.g. `::` instead of `#` if values may contain `#`).
-
-### 1.6 Field value is an empty string `""`
-**Input:** `buildKeyValue(parseTemplate("USER#{{userId}}"), { userId: "" })`
-**Current behaviour:** Empty string passes the `null`/`undefined` guard; the built key is `"USER#"`.
-**Risk:** If this is a partition key, DynamoDB rejects empty-string key components. If used as a sort key component, it stores and retrieves correctly but is probably unintended.
-
-### 1.7 Field value that is `false` or `0`
-**Input:** `buildKeyValue(template, { flag: false })`
-**Current behaviour:** Both pass the null/undefined guard and are coerced with `String()` — `"false"` and `"0"` are stored in the key.
-**Risk:** Likely intentional for number fields used in keys, but surprising for booleans. Consider documenting that only string-representable values should be used in key templates.
-
----
-
-## 2. Key Extractor (`src/keys/key-extractor.ts`)
-
-### 2.1 Delimiter appears multiple times in the key value
-**Template:** `"{{orgId}}#USER#{{userId}}"`, key `"ACME#CORP#USER#u1"`
-**Current behaviour:** `indexOf("USER#", 0)` finds the first occurrence of the literal after position 0. Since `"ACME#CORP"` doesn't contain `"USER#"`, the match falls at position 10 — giving `orgId = "ACME#CORP"`. This case works correctly.
-**However:** With template `"{{a}}#{{b}}"` and key `"x#y#z"`, `indexOf("#", 0)` matches at position 1 (the first `#`), giving `a = "x"`, `b = "y#z"`. This is **greedy-last**: the *first* occurrence of the literal is used, so `a` gets the shortest possible match. Consumers expecting the last `#` to be the delimiter will be surprised.
-
-### 2.2 Key shorter than the template prefix
-**Template:** `"USER#{{userId}}"`, key `"USER"` (missing the `#`)
-**Current behaviour:** `startsWith("USER#", 0)` fails → error: `Key value "USER" does not match template pattern at position 0`.
-**Risk:** Well-handled, but the error message points to position 0 even though the actual mismatch is at the end of the string.
-
-### 2.3 Field value is empty string in extraction result
-**Template:** `"USER#{{userId}}"`, key `"USER#"`
-**Current behaviour:** Extraction succeeds and returns `{ userId: "" }`.
-**Risk:** An empty userId is probably invalid data, but no validation is applied on the extracted value.
+No High-severity entries are open; every resolved High entry has regression tests in `src/__tests__/edge-cases.test.ts`, grouped by entry ID. The open Medium and Low entries have no regression tests yet.
 
 ---
 
-## 3. Marshalling (`src/marshalling/marshall.ts`)
+## Expressions & aliasing
 
-### 3.1 Mixed-type `Set`
-**Input:** `new Set(["a", 1, true])`
-**Current behaviour:** `marshallSet` inspects only the **first** element to determine the set type. First element `"a"` → `SS`. The remaining elements (number `1`, boolean `true`) are coerced to strings via JavaScript's implicit `String()`. The result is `{ SS: ["a", "1", "true"] }` — silently converting non-strings.
-**Risk:** Data is stored as `["a", "1", "true"]` when the original set was mixed. Round-trip fidelity is lost.
+### EXP-4. `needsAlias` ignores names starting with a digit
+**Severity:** Low · **Where:** `needsAlias`, `buildExpressionAttributeNames` (exported utilities)
 
-### 3.2 `Set` containing empty string
-**Input:** `new Set([""])`
-**Current behaviour:** `set.size === 1` so the empty-set guard is bypassed. Marshalled as `{ SS: [""] }`.
-**Risk:** DynamoDB does **not** allow empty strings inside String Sets (SS). The error surfaces at the service level with a generic `ValidationException`, not as a library-level marshalling error.
+**Behaviour:** `needsAlias("1stPlace") === false`, but an unaliased name in an expression must start with a letter or `_`. No built-in operation is affected, because operations always alias every name. Only callers of the exported helpers are affected.
 
-### 3.3 Circular object references
-**Input:** `const obj: Record<string, unknown> = {}; obj.self = obj;`
-**Current behaviour:** `marshallMap` recurses into `obj.self`, which recurses into `obj.self.self`, etc. Results in a JavaScript `Maximum call stack size exceeded` exception rather than a graceful `Result` error.
-**Risk:** Uncaught exception escapes the `Result` boundary.
-
-### 3.4 `BigInt` → `Number` precision loss on round-trip
-**Marshal:** `BigInt(Number.MAX_SAFE_INTEGER + 1)` → `{ N: "9007199254740992" }`
-**Unmarshal:** `Number("9007199254740992")` → `9007199254740992` (imprecise in JS `Number`).
-**Risk:** BigInt values beyond `Number.MAX_SAFE_INTEGER` are marshalled correctly but unmarshalled as imprecise `number`. The round-trip is lossy with no warning.
-
-### 3.5 Large numeric string in `N` type produces `Infinity` on unmarshal
-**Input from DynamoDB:** `{ N: "1e309" }` (valid in DynamoDB's number type)
-**Current behaviour:** `Number("1e309")` → `Infinity`. The marshaller rejects `Infinity` as input, but the **unmarshaller** does not validate `N` strings retrieved from DynamoDB. An out-of-range number stored externally silently becomes `Infinity` in JavaScript.
-
-### 3.6 `NULL: false` attribute value
-**Input:** `{ NULL: false }` (uncommon but spec-legal)
-**Current behaviour:** `getAttributeValueType` returns `"NULL"`, and the unmarshaller returns `null` regardless of the boolean value.
-**Risk:** A `NULL: false` value is indistinguishable from `NULL: true` after unmarshalling.
-
-### 3.7 `Date` objects are silently marshalled as empty maps
-**Input:** `new Date("2024-01-01")`
-**Current behaviour:** `Date` is an object, not an Array or Set, so it falls through to `marshallMap`. `Object.entries(new Date())` returns `[]` (Date's numeric properties are not enumerable). Result: `{ M: {} }`.
-**Risk:** The date value is silently discarded. No error is raised. Always convert `Date` to a string or Unix timestamp before storing.
-
-### 3.8 JavaScript `Map` objects are silently marshalled as empty maps
-**Input:** `new Map([["key", "value"]])`
-**Current behaviour:** `Object.entries(new Map(...))` returns `[]` (Map's entries are not own enumerable properties). Result: `{ M: {} }`.
-**Risk:** All map data is silently discarded. Use plain objects or convert with `Object.fromEntries()` first.
-
-### 3.9 `undefined` inside nested objects vs. top-level items
-**Top level** (`marshallItem`): `{ a: undefined }` → `a` is **skipped** (not written to DynamoDB).
-**Nested** (`marshallMap` via `marshallValue`): `{ nested: { a: undefined } }` → `nested.a` is marshalled as `{ NULL: true }` and stored in DynamoDB.
-**Risk:** Inconsistent behaviour depending on nesting depth. `undefined` at the root is dropped; `undefined` inside a nested object becomes `null`.
+**Fix:** Change the check to `/^[A-Za-z_][A-Za-z0-9_]*$/` and treat a mismatch as needing an alias.
 
 ---
 
-## 4. Unmarshalling (`src/marshalling/unmarshall.ts`)
+## Key templates
 
-### 4.1 Unrecognised `AttributeValue` type
-**Input:** An `AttributeValue` with a key that doesn't match any known type.
-**Current behaviour:** Falls through the `switch` to the `default` case and returns `err(new Error("Unrecognized AttributeValue type"))`.
-**Risk:** Well-handled for the library's known types, but if AWS adds a new type in the future, items using that type will fail to unmarshal.
+### KEY-2. Empty-string key or key field
+**Severity:** Medium · **Where:** `parseTemplate`, `buildKeyValue`
 
----
+**Behaviour:** `parseTemplate("")` builds `""`, and `{ userId: "" }` passes the null/undefined guard (`USER#{{userId}}` → `"USER#"`). An empty key attribute is rejected by DynamoDB. An empty *component* is stored, but is almost certainly a bug. `extractFieldsFromKey` likewise returns `{ userId: "" }` for `"USER#"`.
 
-## 5. Update Expression Builder (`src/operations/update.ts`)
+**Fix:** Reject empty templates when the entity is defined. Reject empty field values in `buildKeyValue`, or make that configurable.
 
-### 5.1 Same attribute path set multiple times
-**Input:** `builder.set("name", "John").set("name", "Jane")`
-**Compiled expression:** `SET #s0_name = :s0_name, #s1_name = :s1_name` with `{ "#s0_name": "name", "#s1_name": "name" }`.
-**Current behaviour:** DynamoDB applies both assignments (last one in the expression wins). Both succeed without error.
-**Risk:** The earlier value is silently discarded. The user might expect an error on duplicate paths.
+### KEY-3. Malformed placeholders are treated as literals
+**Severity:** Low · **Where:** `TEMPLATE_REGEX` in `src/keys/template-parser.ts`
 
-### 5.2 Nested attribute paths using dot notation
-**Input:** `builder.set("address.city", "NYC")`
-**Current behaviour:** `aliasAttributeName("s0_address.city")` = `"#s0_address.city"`, mapped to `"address.city"` as a **single** attribute name. DynamoDB would attempt to find a top-level attribute literally named `"address.city"`, not the nested `address → city` path.
-**Risk:** The expression will not update the nested `city` field; it will attempt to set an attribute with a literal dot in its name (which doesn't exist). DynamoDB will either error or create an unexpected attribute. Nested paths require separate aliases: `#address.#city` with two entries in `ExpressionAttributeNames`.
+**Behaviour:** `{{}}` and `{{ userId }}` don't match `\{\{(\w+)\}\}`, so the whole template becomes a static literal (`isSimple: true`) that never interpolates.
 
-### 5.3 `add` or `delete` used with non-Set / non-numeric values
-**Input:** `builder.add("name", "suffix")` (string, not number or Set)
-**Current behaviour:** The builder accepts any `T[K]` value; no type check is enforced for `add`/`delete` operations.
-**Risk:** DynamoDB will throw a `ValidationException` at call time. The library provides no upfront validation.
+**Fix:** After parsing, fail when the remaining literal text still contains `{{` or `}}`.
 
-### 5.4 `compileUpdateActions` with no actions produces empty expression string
-**Current behaviour:** If all action arrays are empty, `clauses` is empty and `updateExpression: ""` is returned.
-**Risk:** `executeUpdate` catches this (returns a `"validation"` error). However, `executeTransactWrite` does **not** validate for an empty update expression before calling DynamoDB — see §8.1.
+### KEY-4. Duplicate field in one template
+**Severity:** Low · **Where:** `parseTemplate`, `extractFieldsFromKey`
 
----
+**Behaviour:** `{{id}}#{{id}}` records `fields: ["id", "id"]`. Extracting `"a#b"` returns `{ id: "b" }`: the second value overwrites the first, and the mismatch goes undetected.
 
-## 6. Query Operation (`src/operations/query.ts`)
+**Fix:** Reject duplicate fields when parsing, or check during extraction that repeated fields have equal values.
 
-### 6.1 GSI query uses the table's sort key — not the GSI's sort key
-**Scenario:** Entity is queried against a GSI (via `options.indexName`) that has a different sort key attribute than the table's main sort key.
-**Current behaviour:** `buildKeyConditionExpression` uses `entity.table.sortKey.name` regardless of the index being queried.
-**Risk:** The key condition expression references the wrong attribute when the index's sort key differs from the table's sort key. DynamoDB returns a `ValidationException`. There is no way to specify an index-specific sort key name through the current API.
+### KEY-5. Non-string field values are stringified
+**Severity:** Low · **Where:** `buildKeyValue`
 
-### 6.2 `sortKeyCondition` silently ignored when table has no sort key
-**Input:** Provide `sortKeyCondition` on an entity whose table has no sort key.
-**Current behaviour:** The condition is silently dropped. The query runs with only the partition key condition.
-**Risk:** The caller believes they are filtering by sort key but the filter is never applied. No warning or error is returned.
+**Behaviour:** Values pass through `String()`, so `false` becomes `"false"`, `0` becomes `"0"`, and an object becomes `"[object Object]"`.
 
-### 6.3 `between` with reversed bounds
-**Input:** `{ between: ["Z", "A"] }`
-**Current behaviour:** Generates `SK BETWEEN :skLo AND :skHi` — valid DynamoDB syntax. DynamoDB returns 0 results because no key satisfies `Z ≤ SK ≤ A`.
-**Risk:** Silent empty result set with no indication of the bound ordering issue. Add a guard or document that `lo` must be ≤ `hi`.
-
-### 6.4 `limit: 0` or negative `limit`
-**Input:** `options.limit = 0` or `options.limit = -1`
-**Current behaviour:** Passed directly to DynamoDB, which throws a `ValidationException`.
-**Risk:** The library provides no pre-validation of the `limit` value.
-
-### 6.5 `isAttributeMap` heuristic false positive / false negative
-The `isAttributeMap` helper decides whether to re-marshall a `startKey`. It inspects only the **first** value in the object.
-**False positive:** A plain object whose first value happens to be `{ S: "..." }` (e.g. `{ pk: { S: "USER#1" } }`) is identified as an already-marshalled map and skipped. This is the intended behaviour for raw adapters but may surprise users of the DocumentClient adapter who pass DynamoDB-shaped keys.
-**False negative:** An AttributeMap whose first attribute uses a less-common type key (like `B` or `NULL`) alongside other keys will be misidentified if it somehow has multiple keys in the wrapper object (which would be malformed anyway, but defensive coding should be considered).
-
-### 6.6 Raw filter expression with reserved words
-**Input:** `options.filter = "status = :val"` where `status` is a DynamoDB reserved word.
-**Current behaviour:** The raw string is passed to DynamoDB unchanged. DynamoDB returns a `ValidationException`.
-**Risk:** No auto-aliasing is applied to raw filter/condition strings. Users must handle reserved words in these strings manually.
+**Fix:** Accept only `string | number | bigint`, and return a `"key"` error for anything else.
 
 ---
 
-## 7. Batch Operations
+## Marshalling
 
-### 7.1 `BatchGet` with multiple entities sharing the same table
-**Scenario:** Single-table design with two entities (e.g. `UserEntity` and `OrderEntity`) on the same table.
-**Current behaviour:** `tableConfigs` is keyed by `tableName`. The **first** entity's `projection` and `consistentRead` are stored; subsequent entities on the same table are ignored. Additionally, the entity name for responses is resolved by finding the first `tableName` match in `chunkKeys` — all items returned for that table are attributed to the first entity's name.
-**Risk:** For multi-entity BatchGet on a single table, projection settings of subsequent entities are silently dropped, and all results are grouped under the first entity's name.
+### MAR-2. Set element types are not checked
+**Severity:** Medium · **Where:** `marshallSet`
 
-### 7.2 Unprocessed items after the single retry are silently discarded
-**Current behaviour (`batchWrite`, `batchGet`):** One retry is attempted for unprocessed items. If items remain unprocessed after the retry, the function returns `ok(undefined)` / `ok({ responses: ... })` without surfacing the partial failure.
-**Risk:** Silent data loss or incomplete reads under sustained throttling.
+**Behaviour:** Only the first element picks the set type, and the rest are cast without checking: `new Set(["a", 1, true])` → `{ SS: ["a", 1, true] }`, and `new Set([1, "a"])` → `{ NS: ["1", "a"] }`. The values are not coerced. The result is an invalid payload that AWS rejects.
 
-### 7.3 `BatchWrite` with 0 items
-**Input:** `executeBatchWrite(adapter, [])`
-**Current behaviour:** No DynamoDB calls are made; returns `ok(undefined)` immediately.
-**Risk:** Well-handled, but not documented. Callers can safely pass empty arrays.
+**Fix:** Check every element against the chosen type and return a `"marshalling"` error on a mismatch.
 
-### 7.4 `BatchGet` duplicate keys
-**Input:** The same key repeated multiple times in a `BatchGetEntityRequest.keys` array.
-**Current behaviour:** All duplicates are included as separate entries in the flat key list and contribute toward the 100-item chunk limit.
-**Risk:** Duplicate keys waste capacity units. DynamoDB does not deduplicate within a `BatchGetItem` request.
+### MAR-3. Number range and precision are not checked
+**Severity:** Medium · **Where:** `marshallValue`, `unmarshallValue`
 
----
+**Behaviour:**
+- **Marshalling:** Only non-finite numbers are rejected. `1e200` becomes `{ N: "1e+200" }`, outside DynamoDB's range (±1E-130 to ±9.99…E+125), and AWS rejects it.
+- **Unmarshalling:** `Number()` keeps about 15–17 significant digits, while DynamoDB stores up to 38. Large IDs and high-precision decimals written by other clients are silently rounded.
 
-## 8. TransactWrite Operation (`src/operations/transact-write.ts`)
+**Fix:** Check the range when marshalling. When unmarshalling, offer a number mode (for example, return a `string` or `bigint` when the value doesn't round-trip exactly).
 
-### 8.1 Empty update action in a transactional update
-**Scenario:** A `transactUpdate` request whose `builderFn` returns an unmodified empty builder.
-**Current behaviour:** `compileUpdateActions` produces `updateExpression: ""`. Unlike `executeUpdate`, `executeTransactWrite` does **not** validate for an empty expression before calling DynamoDB.
-**Risk:** DynamoDB throws a `ValidationException` for an empty `UpdateExpression`. The error surfaces as a generic `"dynamo"` error rather than the more helpful `"validation"` error that `executeUpdate` would return.
+### MAR-4. Circular references overflow the stack
+**Severity:** Medium · **Where:** `marshallMap`, `marshallList`
 
-### 8.2 More than 100 items in a single transaction
-**Current behaviour:** All items are passed to `adapter.transactWriteItems` in a single call with no upfront limit check.
-**Risk:** DynamoDB rejects requests with more than 100 transact items. The error surfaces as a generic `"dynamo"` error. A pre-check with a clear message would improve debuggability.
+**Behaviour:** `obj.self = obj` recurses until `RangeError: Maximum call stack size exceeded`, which escapes the `Result` boundary. DynamoDB also limits nesting to 32 levels, which isn't enforced.
 
-### 8.3 Duplicate operations on the same item
-**Scenario:** Two operations targeting the same partition key + sort key within one transaction.
-**Current behaviour:** No deduplication or validation is performed.
-**Risk:** DynamoDB rejects the transaction with a `TransactionCanceledException` (code `ValidationError`). The error message from DynamoDB is passed through but may be difficult to trace back to the specific duplicate item.
+**Fix:** Track ancestors with a `WeakSet` (or a depth counter capped at 32) and return an error.
 
-### 8.4 No auto-TTL injection in transactional updates
-**Scenario:** An entity has `ttl.autoUpdateTtlSeconds` configured.
-**Current behaviour:** `executeTransactWrite` does **not** inject the auto-TTL refresh for `"update"` type requests (unlike `executeUpdate` which does).
-**Risk:** Users expecting TTL to be auto-refreshed inside transactions will silently miss the refresh.
+### MAR-5. `undefined` is dropped at the root but stored as `NULL` when nested
+**Severity:** Medium · **Where:** `marshallItem` vs `marshallValue`
 
----
+**Behaviour:** `{ a: undefined }` skips `a`, but `{ n: { a: undefined } }` stores `n.a` as `{ NULL: true }`, and `[undefined]` becomes `[{ NULL: true }]`. A round-trip turns nested `undefined` into `null`.
 
-## 9. TTL
+**Fix:** Skip `undefined` map entries at every depth, matching the AWS SDK's `removeUndefinedValues`. Decide and document the policy for lists.
 
-### 9.1 TTL attribute name conflicts with a schema field
-**Scenario:** `table.ttl.attributeName` matches a field defined in the entity's schema (e.g. schema has `expiresAt: z.number()` and table TTL is `{ attributeName: "expiresAt" }`).
-**Current behaviour:** `executePut` **overwrites** the schema-validated `expiresAt` with the auto-computed TTL value: `itemData[ttlAttributeName] = Math.floor(Date.now() / 1000) + defaultTtlSeconds`.
-**Risk:** The user's schema-provided value for that field is silently replaced. The returned item reflects the auto-computed TTL, not the user-provided value.
+### MAR-6. Sets containing an empty string or empty binary
+**Severity:** Medium · **Where:** `marshallSet`
 
-### 9.2 TTL attribute name is a DynamoDB reserved word
-**Example:** `ttl: { attributeName: "ttl" }` — `"TTL"` is in the reserved-word list.
-**Current behaviour:** The library stores the attribute without issue (reserved words only matter in expressions, not attribute names themselves). However, if users write condition expressions that reference the TTL attribute name directly (e.g. `"ttl > :now"`), DynamoDB will reject the expression.
-**Risk:** Users must alias the TTL attribute name when referencing it in conditions. The library provides no automatic aliasing for the TTL attribute name in raw condition strings.
+**Behaviour:** `new Set([""])` passes the empty-set guard and becomes `{ SS: [""] }`. DynamoDB rejects empty strings and empty binaries inside sets.
 
-### 9.3 `autoUpdateTtlSeconds` configured on entity without table TTL
-**Scenario:** Entity has `ttl.autoUpdateTtlSeconds` set, but the table has no `ttl` config.
-**Current behaviour:** The check `entity.table.ttl?.attributeName` is falsy, so TTL injection is silently skipped on every update.
-**Risk:** The entity configuration implies TTL auto-refresh, but nothing happens. No error or warning is emitted at entity definition time or operation time.
+**Fix:** Reject empty elements in `marshallSet`.
 
-### 9.4 TTL value already in the past
-**Scenario:** `defaultTtlSeconds: 1` — by the time the network round-trip completes, the computed TTL timestamp may already be expired.
-**Current behaviour:** The item is written successfully. DynamoDB stores it but may delete it within seconds.
-**Risk:** Items with very short TTL windows may be deleted before they can be read. No validation enforces a minimum TTL duration.
+### MAR-7. Unmarshalled numbers are always `number`
+**Severity:** Low · **Where:** `unmarshallValue`
 
-### 9.5 TTL seconds value that overflows JavaScript `Number`
-**Input:** `defaultTtlSeconds: Number.MAX_SAFE_INTEGER`
-**Current behaviour:** `Math.floor(Date.now() / 1000) + Number.MAX_SAFE_INTEGER` evaluates to `Infinity`. When marshalling, `Number.isFinite(Infinity)` is `false` → marshalling error: `"Cannot marshall non-finite number"`.
-**Risk:** The overflow is caught by the marshaller, but the error is surfaced as a `"marshalling"` error rather than a `"validation"` error at the TTL configuration level.
+**Behaviour:** A `bigint` beyond `Number.MAX_SAFE_INTEGER` marshals exactly but comes back as an imprecise `number`. This is the read-side half of MAR-3.
+
+**Fix:** Covered by the number-mode option in MAR-3.
 
 ---
 
-## 10. Expression Attribute Names (`src/utils/expression-names.ts`)
+## Put
 
-### 10.1 Attribute names starting with a digit
-**Example:** `"1stPlace"`, `"2024Revenue"`
-**Current behaviour:** `needsAlias` checks for reserved words (none match) and special characters (`[^a-zA-Z0-9_]` — digits pass). Result: `needsAlias("1stPlace") === false`, so no alias is generated.
-**Risk:** DynamoDB expression attribute names **without** an alias must start with `[a-zA-Z_]`. Using `1stPlace` directly in an expression (unaliased) causes a `ValidationException`. The library will not alias it automatically.
+### PUT-3. `put` returns the locally built item
+**Severity:** Low (by design) · **Where:** `executePut`
 
-### 10.2 Alias key collisions between user-provided and auto-generated names
-**Scenario:** User provides `expressionNames: { "#s0_name": "someOtherAttr" }` in update options, while `compileUpdateActions` also auto-generates `"#s0_name"` (index 0, path `"name"`).
-**Current behaviour:** `{ ...compiled.expressionAttributeNames, ...options.expressionNames }` — the **user's** value wins because user names are spread last.
-**Risk:** The auto-generated name alias is silently overridden. The update expression references `#s0_name` but it now maps to `"someOtherAttr"` instead of `"name"`. The wrong attribute is updated.
+**Behaviour:** The return value is the locally assembled record (validated data plus key, index and TTL attributes), not data read back from DynamoDB. At runtime it contains key attributes that `InferOutput<S>` doesn't declare.
 
-### 10.3 Deeply nested attribute paths (`address.city`, `tags[0]`)
-**Input:** `builder.set("address.city", "NYC")`
-**Current behaviour:** `aliasAttributeName("s0_address.city")` → `"#s0_address.city"`, mapped to the literal attribute name `"address.city"`.
-**Risk:** DynamoDB treats `address.city` as a nested path only when **each component** is separately aliased (`#address.#city`). A single alias mapping to the dot-separated string treats `"address.city"` as a flat attribute name with a literal dot. The library does not support nested path expressions through the builder API.
+**Fix:** Document this. Consider stripping generated attributes from the returned value, or widening the return type.
 
 ---
 
-## 11. Validation (`src/validation/validate.ts`)
+## Update
 
-### 11.1 Schema `validate()` function throws synchronously or rejects
-**Current behaviour:** `const result = await schema["~standard"].validate(value)` — if the schema throws or rejects, the error propagates as an unhandled exception / rejected Promise rather than being wrapped in a `Result`.
-**Risk:** A buggy or non-compliant StandardSchema implementation can cause unhandled promise rejections that escape the `Result` boundary.
+### UPD-1. Overlapping paths in one update
+**Severity:** Medium · **Where:** `compileUpdateActions`
 
-### 11.2 Schema returning both `value` and `issues`
-**Scenario:** A non-standard-compliant schema returns `{ value: x, issues: [{ message: "..." }] }`.
-**Current behaviour:** `"issues" in result && result.issues !== undefined` → treated as a **failure**. The `value` is ignored.
-**Risk:** A partially-valid schema response is always treated as a failure even if it contains a `value`. This is spec-correct per StandardSchemaV1 but may trip up users experimenting with custom schema adapters.
+**Behaviour:** `.set("name", "a").set("name", "b")`, or a `set` plus a `remove` on the same path, compiles fine. DynamoDB then rejects it: *"Two document paths overlap with each other"*. The earlier value doesn't silently "win".
 
----
+**Fix:** Detect duplicate or overlapping paths during compilation and return a `"validation"` error. Alternatively, collapse repeated `set` calls on a path into the last one.
 
-## 12. Put Operation (`src/operations/put.ts`)
+### UPD-2. `add` / `delete` accept any value type
+**Severity:** Medium · **Where:** `createUpdateBuilder`
 
-### 12.1 `put` returns locally constructed item, not DynamoDB-confirmed data
-**Current behaviour:** `executePut` returns `ok(itemData)` where `itemData` is the locally built record (with injected keys and TTL). DynamoDB `PutItem` does not return the stored item (`RETURN_VALUES` is not set).
-**Risk:** If a DynamoDB trigger, condition, or default value modifies the item server-side, the returned data will not reflect those changes. Callers using the return value as a canonical record could operate on stale data.
+**Behaviour:** `add("name", "suffix")` type-checks because the value type is `T[K]`. AWS rejects it at call time.
 
-### 12.2 Key attribute injected into the returned item but not in the schema
-**Current behaviour:** `executePut` injects `pk`/`sk` attributes into `itemData` and returns that record. The partition/sort key attribute names are not part of the entity's schema type.
-**Risk:** The returned `itemData` has extra fields (`pk`, `sk`) that do not appear in `StandardSchemaV1.InferOutput<S>`. The cast to `InferOutput<S>` hides them at the type level but they are present at runtime.
+**Fix:** Narrow the types: `add` only for `number` or `Set` keys, `delete` only for `Set` keys. Optionally, check at runtime too.
 
----
+### UPD-3. Update values are never schema-validated
+**Severity:** Medium · **Where:** `executeUpdate`, transact-write `"update"`
 
-## 13. Get Operation (`src/operations/get.ts`)
+**Behaviour:** `put` validates through the schema, but update values go straight to DynamoDB. `set("age", "not a number" as any)` writes invalid data.
 
-### 13.1 Item not found returns `ok(undefined)` — not distinguishable from schema failure at type level
-**Current behaviour:** When an item is not found, `executeGet` returns `ok(undefined)` (a successful `Result` with no data).
-**Risk:** Well-designed per the `Result<T | undefined, E>` return type, but callers must always check for `undefined`. Easy to forget compared to pattern-matching `success: false`.
+**Fix:** Validate each `set` value against the field's schema where the schema library allows it, or document the gap clearly.
 
 ---
 
-## 14. Scan Operation (`src/operations/scan.ts`)
+## TransactWrite (`src/operations/transact-write.ts`)
 
-### 14.1 Scan on an entity includes items from other entities in single-table designs
-**Current behaviour:** `executeScan` scans the entire table (or GSI) and returns all matching items, regardless of entity type.
-**Risk:** In single-table designs, a scan on the `UserEntity` will also return `OrderEntity` items, `ProductEntity` items, etc. The items are cast to `InferOutput<S>` without any entity-type filtering. Unmarshalled items from other entity types may fail schema validation if consumed downstream.
+### TXW-1. TransactWrite does not validate empty updates
+**Severity:** Medium
+
+**Behaviour:** `executeUpdate` returns a `"validation"` error for an empty expression. The transactional `"update"` branch sends `UpdateExpression: ""`, and the failure comes back as a generic `"dynamo"` error.
+
+**Fix:** Apply the same empty-expression check, and include the request's index in the message.
+
+### TXW-2. No 100-item / 4 MB pre-check
+**Severity:** Medium
+
+**Behaviour:** All items go to one `transactWriteItems` call. DynamoDB rejects more than 100 items, or more than 4 MB in total, and the library reports it as a generic `"dynamo"` error.
+
+**Fix:** Check the item count up front and return a `"validation"` error.
+
+### TXW-3. No auto-TTL refresh in transactional updates
+**Severity:** Medium
+
+**Behaviour:** `executeUpdate` injects the `autoUpdateTtlSeconds` refresh; the transactional `"update"` branch doesn't.
+
+**Fix:** Extract the TTL-injection step from `update.ts` and reuse it here.
+
+### TXW-4. Two operations on the same item
+**Severity:** Low
+
+**Behaviour:** No check. DynamoDB cancels the transaction with a `ValidationError` that is hard to trace back to the duplicate request.
+
+**Fix:** Detect duplicate table+key pairs and return a `"validation"` error that names both request indexes.
 
 ---
 
-## 15. BatchGet / BatchWrite — Empty Request Arrays
+## Batch operations
 
-| Operation | Input | Behaviour |
-|-----------|-------|-----------|
-| `executeBatchWrite` | `[]` | Returns `ok(undefined)` immediately, no DynamoDB call |
-| `executeBatchGet` | `[]` | Returns `ok({ responses: {} })` immediately, no DynamoDB call |
+### BAT-4. Duplicate keys in one batch are rejected by AWS
+**Severity:** Medium
 
-Both are correct, but undocumented. Useful to know for callers that conditionally build request arrays.
+**Behaviour:** Repeated keys in `BatchGetEntityRequest.keys`, and repeated put/delete targets in a BatchWrite, are sent as they are. DynamoDB rejects the whole request with *"Provided list of item keys contains duplicates"*. It doesn't merely waste capacity.
 
----
-
-## 16. Entity Name Collisions in `BatchGetResult`
-
-### 16.1 Two entities with the same `name` on different tables
-**Scenario:** `defineEntity({ name: "User", ... })` used for two different schemas on different tables.
-**Current behaviour:** `BatchGetResult.responses` is keyed by entity name. Both tables' results are merged under the same key.
-**Risk:** Results from one entity's table silently overwrite or merge with results from the other entity's table. Entity `name` values must be globally unique if `BatchGet` is used across entities.
+**Fix:** Deduplicate BatchGet keys automatically. For BatchWrite, return a `"validation"` error.
 
 ---
 
-## Summary Table
+## Query & scan
 
-| # | Area | Severity | Handled? |
-|---|------|----------|----------|
-| 1.1 | Empty string template → empty key | Medium | No — AWS error |
-| 1.2–1.3 | Empty/whitespace placeholder silently literal | Low | No |
-| 1.5 | Field value contains delimiter | High | No |
-| 1.6 | Empty string field value | Medium | No |
-| 3.1 | Mixed-type Set silently coerces | High | No |
-| 3.2 | Set containing empty string | Medium | No — AWS error |
-| 3.3 | Circular reference stack overflow | High | No |
-| 3.4 | BigInt precision loss on unmarshal | Medium | No |
-| 3.7 | `Date` marshalled as empty map | High | No |
-| 3.8 | `Map` marshalled as empty map | High | No |
-| 3.9 | `undefined` nested ≠ `undefined` root | Medium | No |
-| 5.2 | Dot-notation nested path in builder | High | No |
-| 6.1 | GSI query uses wrong sort key attribute | High | No |
-| 6.2 | `sortKeyCondition` silently ignored | Medium | No |
-| 7.1 | Multi-entity BatchGet on single table | High | No |
-| 7.2 | Retry unprocessed items silently discarded | High | No |
-| 8.1 | Empty transact update expression | Medium | Partial — AWS error |
-| 8.2 | TransactWrite > 100 items | Medium | No — AWS error |
-| 8.4 | No auto-TTL in transactional updates | Medium | No |
-| 9.1 | TTL attribute name conflicts with schema field | High | No |
-| 9.3 | `autoUpdateTtlSeconds` without table TTL | Medium | No |
-| 10.1 | Digit-starting attribute names not aliased | Medium | No |
-| 10.2 | User-provided alias collides with auto-generated | Low | No |
-| 10.3 | Nested path dot-notation in expressions | High | No |
-| 11.1 | Schema validate throws → unhandled exception | Medium | No |
-| 12.1 | `put` returns local data, not DynamoDB-confirmed | Low | By design |
-| 16.1 | Entity name collision in BatchGet | High | No |
+### QRY-1. `sortKeyCondition` silently ignored without a sort key
+**Severity:** Medium · **Where:** `buildKeyConditionExpression` (`src/operations/query.ts`)
+
+**Behaviour:** If the table, or the queried index, has no sort key, a supplied `sortKeyCondition` is silently dropped, and the caller gets unfiltered results.
+
+**Fix:** Return a `"validation"` error.
+
+### QRY-2. `limit` and pagination semantics
+**Severity:** Medium (documentation)
+
+**Behaviour:** `limit` caps items *evaluated*, before the filter runs, and each call returns one page of at most 1 MB. A filtered query with `limit: 10` can return 0–10 items and a `lastKey`.
+
+**Fix:** Document this in the README. Consider adding a paginating helper (for example `queryAll` or an async iterator).
+
+### QRY-3. `limit: 0` or negative
+**Severity:** Low
+
+**Behaviour:** Passed through to AWS, which rejects it with a `ValidationException`.
+
+**Fix:** Check for a positive integer up front.
+
+### QRY-4. Reversed `between` bounds
+**Severity:** Low
+
+**Behaviour:** `{ between: ["Z", "A"] }` is valid syntax and silently returns 0 items.
+
+**Fix:** Return a `"validation"` error when `lo > hi` in string comparison order.
+
+### QRY-5. Sort-key values are not templated
+**Severity:** Low (documentation)
+
+**Behaviour:** The partition key goes through the entity's template, but `sortKeyCondition` values are raw strings. Callers must hand-write `"ORDER#2024"` and keep it in sync with the template.
+
+**Fix:** Document this. Consider adding a templated form (for example `{ beginsWith: { orderDate: "2024" } }`).
+
+### QRY-6. `isAttributeMap` inspects only the first value
+**Severity:** Low · **Where:** `isAttributeMap` (`src/operations/query.ts`)
+
+**Behaviour:** For raw adapters, `startKey` is re-marshalled unless its first value looks like `{ S | N | … : x }`. A plain key whose first value is itself an object with one type-like key is misread as already marshalled.
+
+**Fix:** Check every value, or require callers to pass the `lastKey` from a previous result without changing it.
+
+### READ-1. Scan returns every entity in the table
+**Severity:** Medium · **Where:** `executeScan` (`src/operations/scan.ts`)
+
+**Behaviour:** In a single-table design, `UserEntity.scan()` returns orders, products and so on, all cast to `InferOutput<S>`.
+
+**Fix:** Add an optional entity-type discriminator to entities, and filter on it automatically (or validate each item). At minimum, document this.
+
+---
+
+## TTL
+
+### TTL-1. `autoUpdateTtlSeconds` without a table TTL
+**Severity:** Medium
+
+**Behaviour:** If the table has no `ttl` config, the entity's `autoUpdateTtlSeconds` (and `defaultTtlSeconds`) are silently ignored on every write.
+
+**Fix:** Return an error from `defineEntity` (or table validation) when an entity sets TTL options and its table has no TTL.
+
+### TTL-2. TTL overflow is reported as a marshalling error
+**Severity:** Low
+
+**Behaviour:** A huge `defaultTtlSeconds` produces an out-of-range number. Today only `Infinity` is caught, and only by the marshaller (`"marshalling"` error). Finite but huge values are only rejected by AWS (see MAR-3).
+
+**Fix:** Check that TTL seconds are positive, safe integers when the entity is defined.
+
+### TTL-3. Very short TTL windows
+**Severity:** Low (documentation)
+
+**Behaviour:** `defaultTtlSeconds: 1` is accepted. DynamoDB deletes expired items lazily (usually within a few days), and expired items stay readable until then.
+
+**Fix:** Document that TTL is not precise, and that reads should filter on the TTL attribute if precision matters.
+
+---
+
+## Hooks & validation
+
+### HOOK-2. `beforePut` output is not re-validated
+**Severity:** Medium · **Where:** `executePut`
+
+**Behaviour:** Schema validation runs **before** `beforePut`, so whatever the hook returns is written without validation.
+
+**Fix:** Validate after the hook, or validate both before and after.
+
+### VAL-1. A throwing schema escapes the `Result` boundary
+**Severity:** Medium · **Where:** `validate` (`src/validation/validate.ts`)
+
+**Behaviour:** `await schema["~standard"].validate(value)` isn't wrapped in `try`/`catch`. A schema that throws or rejects produces an exception or rejected promise instead of an error `Result`.
+
+**Fix:** Wrap the call and return a `"validation"` error that keeps the original error as `cause`.
+
+---
+
+## Resolved
+
+| ID (old §) | Issue | Resolved by |
+|------------|-------|-------------|
+| §6.1 | GSI query used the table's sort key name | `dc25093`: `resolveQueryKeyInfo` resolves the index's own key names |
+| §7.2 | Unprocessed batch items discarded after one retry | `b436a0b`: exponential-backoff retry, and an error once retries are exhausted |
+| EXP-1 | Attribute names containing `-`, `.`, spaces and similar produced invalid placeholders in update, projection (query, scan, get, transactGet, batchGet) and remove-ttl expressions. Includes the alias half of BAT-5. | Positional placeholders (`#u0`/`:u0`, `#p0`, `#ttl`) and a shared `buildProjection` helper. Covered by the EXP-1 tests in `src/__tests__/edge-cases.test.ts`. |
+| ENT-1 | `defineEntity` without a `sortKey` didn't type-check: the sort-key check distributed over the default `SK = never`, collapsing `config` to `never`. The same bug in `EntityKeyFields` made the key input type `{}` for such entities, so `get({})` type-checked. | Both conditionals wrapped as `[SK] extends [never]`. Covered by the ENT-1 tests in `src/__tests__/edge-cases.test.ts` (type-level checks run under `npm run type-check`). |
+| KEY-6 | The README documented `"userId"` (no `{{}}`) as a field reference; `parseTemplate` treats it as a static literal, so every item would share one key. | README row removed and replaced with the `"{{userId}}"` form plus a warning that a bare name is always static. Code unchanged. |
+| EXP-2 | User `expressionNames`/`expressionValues` were spread over generated placeholders, so a matching key (for example `#u0`) silently redirected the expression to another attribute or value. | New `mergeExpressionMaps` helper, used by put, update, delete, query, scan and transactWrite updates: a conflicting key returns a `"validation"` error, and an identical duplicate is allowed. Covered by the EXP-2 tests. |
+| EXP-3 | Filter paths with dots (`"address.city"`) compiled to a single alias, so a filter meant for a nested attribute silently matched nothing, and there was no way to address nested attributes. | Filter paths now accept a tuple (`["address", "city"]`, `["tags", 0]`) that compiles to one alias per segment (`#f0_0.#f0_1`). A string path stays a single attribute name, consistent with updates and projections; the README documents both. Covered by the EXP-3 tests. |
+| KEY-1 | A field value containing the delimiter that follows it (`orgId: "a#b"` in `{{orgId}}#{{userId}}`) built an ambiguous key: two different items could share a key, and extraction split it wrongly. | `buildKeyValue` returns a `"key"` error when a field value contains the literal that follows it. Every key-building path uses it. Covered by the KEY-1 tests, including an exhaustive round-trip and uniqueness check over short strings. |
+| MAR-1 | `Date`, `Map`, `ArrayBuffer` and class instances fell through to `marshallMap` and were stored as `{ M: {} }`, silently losing their data (raw adapters). | `marshallValue` only marshals plain objects (prototype `Object.prototype` or `null`) as maps; any other object returns a `"marshalling"` error with a conversion hint. DocumentClient adapters still use the AWS SDK's own rules. Covered by the MAR-1 tests. |
+| PUT-1 | Every index an entity mapped was required on every write, so an item missing an index field failed the whole put and sparse GSIs were impossible. | New shared `buildItemKeyAttributes` (`src/keys/item-keys.ts`) replaces three copies of the key-building code in put, batchWrite and transactWrite. An index whose template fields are all absent is skipped; partly present fields still return a `"key"` error. Covered by the PUT-1 tests. |
+| PUT-2 | Key, index and TTL attributes were assigned over the validated data, silently replacing schema fields with the same name (`pk`, `gsi1pk`, `expiresAt`, …). | `buildStoredItem` (`src/keys/item-keys.ts`), used by put, batchWrite and transactWrite, returns a `"key"` error when a field holds a different value than a generated key attribute (equal values are allowed), and only fills in the default TTL when the item has none. Update's auto-TTL is skipped when the update already touches the TTL attribute. Covered by the PUT-2 tests. |
+| TTL-4 | Put requests in `batchWrite` and `transactWrite` didn't get the entity's default TTL. | Fixed alongside PUT-2: all three write paths now build items with `buildStoredItem`, which applies the default TTL. Covered by the TTL-4 test. |
+| BAT-1 | For entities sharing a table, BatchGet used the first entity's projection and `consistentRead` for all of them, and filed every returned item under the first entity's name. | Per-table settings combine all entities (consistent if any asks; union of projections plus key attributes, or full items if any entity has no projection). Each item is matched to its entity by key and trimmed to that entity's projection. Every requested entity gets an array. Covered by the BAT-1 tests. |
+| BAT-5 | BatchGet projections didn't include key attributes, so returned items couldn't be matched to requests. | Fixed with BAT-1: BatchGet projections always add the table's key attributes (and trim them back off for the caller). |
+| BAT-2 | When a later BatchWrite chunk failed, or items stayed unprocessed after retries, earlier chunks were already written but the error didn't say which requests were or weren't. | `executeBatchWrite` now fails with a `BatchWriteError` whose `unprocessed` lists every request not confirmed written, in the caller's order (DynamoDB's `UnprocessedItems` are matched back by key). Requests are chunked in the caller's order. Covered by the BAT-2 tests. |
+| BAT-3 | `BatchGetResult.responses` is keyed by entity name, so two different entities sharing a name had their results merged. | `executeBatchGet` returns a `"validation"` error before sending anything when two different entities share a name; the same entity in several requests is still allowed. Covered by the BAT-3 tests. |
+| HOOK-1 | Hooks only ran in `put`, `get`, `update` and `delete`; batch, transaction, query and scan operations silently skipped them. | `batchWrite` and `transactWrite` run `beforePut`/`beforeUpdate`/`beforeDelete` before sending anything; `query`, `scan`, `batchGet` and `transactGet` run `afterGet` (list items mapped to `undefined` are dropped). All accept `skipHooks`. Shared `runHook` helper keeps error messages identical. Covered by the HOOK-1 tests. |
+| §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
+
+## Expected behaviour (document in the README; not defects)
+
+- `executeBatchWrite(adapter, [])` returns `ok(undefined)` and `executeBatchGet(adapter, [])` returns `ok({ responses: {} })`, with no AWS call.
+- `get` returns `ok(undefined)` when the item doesn't exist; callers must check for `undefined`.
+- Validation fails when a schema returns `issues`, even if it also returns `value` (this follows the StandardSchemaV1 spec).
+- An unrecognised `AttributeValue` type returns an `"Unrecognized AttributeValue type"` error.
+- TTL attribute names that are reserved words (such as `ttl`) need aliasing in raw condition strings; builders alias them automatically.
+
+## Retired entries
+
+These entries from the previous version were dropped as incorrect:
+
+- **§3.6 `NULL: false`:** DynamoDB rejects `NULL: false`, so it can never be read back.
+- **§3.5 `{ N: "1e309" }` is valid:** it isn't; DynamoDB's maximum is about 1E+125. The real number issues are in MAR-3.
+- **§10.1 as an operation bug:** operations always alias names; only the exported helper is affected (EXP-4).

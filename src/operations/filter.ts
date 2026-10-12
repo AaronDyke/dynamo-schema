@@ -14,6 +14,9 @@ import type {
   CompiledFilter,
   FilterInput,
   DynamoAttributeType,
+  FilterPath,
+  FilterPathValue,
+  AttributePath,
 } from "../types/filter-expression.js";
 
 /**
@@ -45,30 +48,30 @@ import type {
  */
 export const createFilterBuilder = <T>(): FilterBuilder<T> =>
   Object.freeze({
-    eq: <K extends string & keyof T>(path: K, value: T[K]) =>
+    eq: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "eq" as const, path, value }) as FilterNode,
-    ne: <K extends string & keyof T>(path: K, value: T[K]) =>
+    ne: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "ne" as const, path, value }) as FilterNode,
-    lt: <K extends string & keyof T>(path: K, value: T[K]) =>
+    lt: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "lt" as const, path, value }) as FilterNode,
-    lte: <K extends string & keyof T>(path: K, value: T[K]) =>
+    lte: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "lte" as const, path, value }) as FilterNode,
-    gt: <K extends string & keyof T>(path: K, value: T[K]) =>
+    gt: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "gt" as const, path, value }) as FilterNode,
-    gte: <K extends string & keyof T>(path: K, value: T[K]) =>
+    gte: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "gte" as const, path, value }) as FilterNode,
-    between: <K extends string & keyof T>(path: K, lo: T[K], hi: T[K]) =>
+    between: <P extends FilterPath<T>>(path: P, lo: FilterPathValue<T, P>, hi: FilterPathValue<T, P>) =>
       Object.freeze({ op: "between" as const, path, lo, hi }) as FilterNode,
-    beginsWith: <K extends string & keyof T>(path: K, value: T[K]) =>
+    beginsWith: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "beginsWith" as const, path, value }) as FilterNode,
-    contains: <K extends string & keyof T>(path: K, value: T[K]) =>
+    contains: <P extends FilterPath<T>>(path: P, value: FilterPathValue<T, P>) =>
       Object.freeze({ op: "contains" as const, path, value }) as FilterNode,
-    attributeExists: <K extends string & keyof T>(path: K) =>
+    attributeExists: <P extends FilterPath<T>>(path: P) =>
       Object.freeze({ op: "attributeExists" as const, path }) as FilterNode,
-    attributeNotExists: <K extends string & keyof T>(path: K) =>
+    attributeNotExists: <P extends FilterPath<T>>(path: P) =>
       Object.freeze({ op: "attributeNotExists" as const, path }) as FilterNode,
-    attributeType: <K extends string & keyof T>(
-      path: K,
+    attributeType: <P extends FilterPath<T>>(
+      path: P,
       type: DynamoAttributeType,
     ) =>
       Object.freeze({ op: "attributeType" as const, path, type }) as FilterNode,
@@ -115,6 +118,26 @@ export const compileFilterNode = (node: FilterNode): CompiledFilter => {
   const names: Record<string, string> = {};
   const values: Record<string, unknown> = {};
 
+  /**
+   * Registers name aliases for `path` and returns its expression form:
+   * `#f<idx>` for a single attribute name, or `#f<idx>_0.#f<idx>_1[2]` for a
+   * nested path (one alias per map segment, list indexes inline).
+   */
+  const aliasPath = (path: AttributePath, idx: number): string => {
+    if (typeof path === "string") {
+      names[`#f${idx}`] = path;
+      return `#f${idx}`;
+    }
+    return path
+      .map((segment, j) => {
+        if (typeof segment === "number") return `[${segment}]`;
+        const alias = `#f${idx}_${j}`;
+        names[alias] = segment;
+        return j === 0 ? alias : `.${alias}`;
+      })
+      .join("");
+  };
+
   const compile = (n: FilterNode): string => {
     switch (n.op) {
       case "eq":
@@ -124,9 +147,8 @@ export const compileFilterNode = (node: FilterNode): CompiledFilter => {
       case "gt":
       case "gte": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
+        const nameAlias = aliasPath(n.path, idx);
         const valAlias = `:f${idx}`;
-        names[nameAlias] = n.path;
         values[valAlias] = n.value;
         const opStr: Record<string, string> = {
           eq: "=",
@@ -141,10 +163,9 @@ export const compileFilterNode = (node: FilterNode): CompiledFilter => {
 
       case "between": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
+        const nameAlias = aliasPath(n.path, idx);
         const loAlias = `:f${idx}lo`;
         const hiAlias = `:f${idx}hi`;
-        names[nameAlias] = n.path;
         values[loAlias] = n.lo;
         values[hiAlias] = n.hi;
         return `${nameAlias} BETWEEN ${loAlias} AND ${hiAlias}`;
@@ -152,41 +173,36 @@ export const compileFilterNode = (node: FilterNode): CompiledFilter => {
 
       case "beginsWith": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
+        const nameAlias = aliasPath(n.path, idx);
         const valAlias = `:f${idx}`;
-        names[nameAlias] = n.path;
         values[valAlias] = n.value;
         return `begins_with(${nameAlias}, ${valAlias})`;
       }
 
       case "contains": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
+        const nameAlias = aliasPath(n.path, idx);
         const valAlias = `:f${idx}`;
-        names[nameAlias] = n.path;
         values[valAlias] = n.value;
         return `contains(${nameAlias}, ${valAlias})`;
       }
 
       case "attributeExists": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
-        names[nameAlias] = n.path;
+        const nameAlias = aliasPath(n.path, idx);
         return `attribute_exists(${nameAlias})`;
       }
 
       case "attributeNotExists": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
-        names[nameAlias] = n.path;
+        const nameAlias = aliasPath(n.path, idx);
         return `attribute_not_exists(${nameAlias})`;
       }
 
       case "attributeType": {
         const idx = counter++;
-        const nameAlias = `#f${idx}`;
+        const nameAlias = aliasPath(n.path, idx);
         const typeAlias = `:f${idx}`;
-        names[nameAlias] = n.path;
         values[typeAlias] = n.type;
         return `attribute_type(${nameAlias}, ${typeAlias})`;
       }

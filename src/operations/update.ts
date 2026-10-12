@@ -18,9 +18,8 @@ import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
-import { valuePlaceholder } from "../utils/expression-values.js";
 import { resolveFilterInput } from "./filter.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /** Options for Update operations. */
 export interface UpdateOptions {
@@ -107,12 +106,34 @@ export const createUpdateBuilder = <T>(): UpdateBuilder<T> => {
   return makeBuilder(emptyActions);
 };
 
+/** True when any action in `actions` targets `path` (so auto-TTL must not add another). */
+const touchesPath = (actions: UpdateActions, path: string): boolean =>
+  actions.sets.some((a) => a.path === path) ||
+  actions.setIfNotExists.some((a) => a.path === path) ||
+  actions.removes.includes(path) ||
+  actions.adds.some((a) => a.path === path) ||
+  actions.deletes.some((a) => a.path === path);
+
 /**
  * Compiles UpdateActions into a DynamoDB UpdateExpression string,
  * ExpressionAttributeNames, and ExpressionAttributeValues.
  *
+ * Every action gets a positional name alias and value placeholder
+ * (`#u0` / `:u0`, `#u1` / `:u1`, ...) numbered across all clauses, so any legal
+ * attribute name (including ones containing `-`, `.` or spaces) produces a
+ * valid expression. A path containing `.` is treated as a single top-level
+ * attribute name, not a nested path.
+ *
  * @param actions - The accumulated update actions
  * @returns The compiled expression parts
+ *
+ * @example
+ * ```ts
+ * compileUpdateActions(createUpdateBuilder<User>().set("user-id", "u1").remove("age").build());
+ * // => { updateExpression: "SET #u0 = :u0 REMOVE #u1",
+ * //      expressionAttributeNames: { "#u0": "user-id", "#u1": "age" },
+ * //      expressionAttributeValues: { ":u0": "u1" } }
+ * ```
  */
 export const compileUpdateActions = (
   actions: UpdateActions,
@@ -123,48 +144,50 @@ export const compileUpdateActions = (
 } => {
   const names: Record<string, string> = {};
   const values: Record<string, unknown> = {};
+  let counter = 0;
+
+  /** Allocates the next positional name alias for `path`. */
+  const aliasName = (path: string): { nameAlias: string; valueAlias: string } => {
+    const i = counter++;
+    const nameAlias = `#u${i}`;
+    names[nameAlias] = path;
+    return { nameAlias, valueAlias: `:u${i}` };
+  };
+
+  /** Allocates a positional name alias for `path` and a value placeholder for `value`. */
+  const aliasNameAndValue = (path: string, value: unknown): { nameAlias: string; valueAlias: string } => {
+    const aliases = aliasName(path);
+    values[aliases.valueAlias] = value;
+    return aliases;
+  };
+
   const clauses: string[] = [];
 
   // SET clause (includes regular sets and setIfNotExists)
-  const setParts: string[] = [];
-
-  actions.sets.forEach((action, i) => {
-    const nameAlias = aliasAttributeName(`s${i}_${action.path}`);
-    const valueAlias = valuePlaceholder(`s${i}_${action.path}`);
-    names[nameAlias] = action.path;
-    values[valueAlias] = action.value;
-    setParts.push(`${nameAlias} = ${valueAlias}`);
-  });
-
-  actions.setIfNotExists.forEach((action, i) => {
-    const nameAlias = aliasAttributeName(`sne${i}_${action.path}`);
-    const valueAlias = valuePlaceholder(`sne${i}_${action.path}`);
-    names[nameAlias] = action.path;
-    values[valueAlias] = action.value;
-    setParts.push(`${nameAlias} = if_not_exists(${nameAlias}, ${valueAlias})`);
-  });
-
+  const setParts = [
+    ...actions.sets.map((action) => {
+      const { nameAlias, valueAlias } = aliasNameAndValue(action.path, action.value);
+      return `${nameAlias} = ${valueAlias}`;
+    }),
+    ...actions.setIfNotExists.map((action) => {
+      const { nameAlias, valueAlias } = aliasNameAndValue(action.path, action.value);
+      return `${nameAlias} = if_not_exists(${nameAlias}, ${valueAlias})`;
+    }),
+  ];
   if (setParts.length > 0) {
     clauses.push(`SET ${setParts.join(", ")}`);
   }
 
   // REMOVE clause
   if (actions.removes.length > 0) {
-    const removeParts = actions.removes.map((path, i) => {
-      const nameAlias = aliasAttributeName(`r${i}_${path}`);
-      names[nameAlias] = path;
-      return nameAlias;
-    });
+    const removeParts = actions.removes.map((path) => aliasName(path).nameAlias);
     clauses.push(`REMOVE ${removeParts.join(", ")}`);
   }
 
   // ADD clause
   if (actions.adds.length > 0) {
-    const addParts = actions.adds.map((action, i) => {
-      const nameAlias = aliasAttributeName(`a${i}_${action.path}`);
-      const valueAlias = valuePlaceholder(`a${i}_${action.path}`);
-      names[nameAlias] = action.path;
-      values[valueAlias] = action.value;
+    const addParts = actions.adds.map((action) => {
+      const { nameAlias, valueAlias } = aliasNameAndValue(action.path, action.value);
       return `${nameAlias} ${valueAlias}`;
     });
     clauses.push(`ADD ${addParts.join(", ")}`);
@@ -172,11 +195,8 @@ export const compileUpdateActions = (
 
   // DELETE clause
   if (actions.deletes.length > 0) {
-    const deleteParts = actions.deletes.map((action, i) => {
-      const nameAlias = aliasAttributeName(`d${i}_${action.path}`);
-      const valueAlias = valuePlaceholder(`d${i}_${action.path}`);
-      names[nameAlias] = action.path;
-      values[valueAlias] = action.value;
+    const deleteParts = actions.deletes.map((action) => {
+      const { nameAlias, valueAlias } = aliasNameAndValue(action.path, action.value);
       return `${nameAlias} ${valueAlias}`;
     });
     clauses.push(`DELETE ${deleteParts.join(", ")}`);
@@ -262,7 +282,8 @@ export const executeUpdate = async <
     ttlAttributeName &&
     autoUpdateTtlSeconds !== undefined &&
     autoUpdateTtlSeconds > 0 &&
-    !options?.skipAutoTtl
+    !options?.skipAutoTtl &&
+    !touchesPath(actions, ttlAttributeName)
   ) {
     actionsWithTtl = Object.freeze({
       ...actions,
@@ -294,17 +315,25 @@ export const executeUpdate = async <
   const resolvedCondition = resolveFilterInput(options?.condition);
 
   // 4. Merge expression names/values from update expression, condition, and user overrides
-  const mergedNames: Record<string, string> = {
-    ...compiled.expressionAttributeNames,
-    ...resolvedCondition.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...compiled.expressionAttributeNames, ...resolvedCondition.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
-  const mergedValues: Record<string, unknown> = {
-    ...compiled.expressionAttributeValues,
-    ...resolvedCondition.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    { ...compiled.expressionAttributeValues, ...resolvedCondition.expressionAttributeValues },
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  const mergedValues = mergedValuesResult.data;
 
   // 4. Marshall if using raw adapter
   let marshalledKey: Record<string, unknown> = key;

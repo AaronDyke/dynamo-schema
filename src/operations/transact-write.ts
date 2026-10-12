@@ -14,9 +14,12 @@ import { createDynamoError } from "../types/operations.js";
 import { validate } from "../validation/validate.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
+import { buildStoredItem } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
+import { runHook } from "../utils/run-hook.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { createUpdateBuilder, compileUpdateActions } from "./update.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /** A transactional put request. */
 export interface TransactPutRequest<S extends StandardSchemaV1 = StandardSchemaV1> {
@@ -71,6 +74,12 @@ export type TransactWriteRequestItem =
 /** Options for transact write. */
 export interface TransactWriteOptions {
   readonly skipValidation?: boolean | undefined;
+  /**
+   * When `true`, entity hooks are bypassed. Otherwise `beforePut`,
+   * `beforeUpdate` and `beforeDelete` run for the matching requests, all
+   * before the transaction is sent. Default: `false`.
+   */
+  readonly skipHooks?: boolean | undefined;
 }
 
 /**
@@ -104,50 +113,7 @@ const buildKey = (
 const buildItemWithKeys = (
   entity: EntityDefinition,
   data: Record<string, unknown>,
-): Result<Record<string, unknown>, Error> => {
-  const record = { ...data };
-
-  const pkTemplate = parseTemplate(entity.partitionKey);
-  const pkResult = buildKeyValue(pkTemplate, record);
-  if (!pkResult.success) return pkResult;
-  record[entity.table.partitionKey.name] = pkResult.data;
-
-  if (entity.sortKey && entity.table.sortKey) {
-    const skTemplate = parseTemplate(entity.sortKey);
-    const skResult = buildKeyValue(skTemplate, record);
-    if (!skResult.success) return skResult;
-    record[entity.table.sortKey.name] = skResult.data;
-  }
-
-  if (entity.indexes) {
-    const indexes = entity.indexes as Record<
-      string,
-      { partitionKey: string; sortKey?: string }
-    >;
-    const tableIndexes = entity.table.indexes as Record<
-      string,
-      { partitionKey: { name: string }; sortKey?: { name: string } }
-    >;
-    for (const [indexKey, indexMapping] of Object.entries(indexes)) {
-      const tableIndex = tableIndexes[indexKey];
-      if (!tableIndex) continue;
-
-      const idxPkTemplate = parseTemplate(indexMapping.partitionKey);
-      const idxPkResult = buildKeyValue(idxPkTemplate, data);
-      if (!idxPkResult.success) return idxPkResult;
-      record[tableIndex.partitionKey.name] = idxPkResult.data;
-
-      if (indexMapping.sortKey && tableIndex.sortKey) {
-        const idxSkTemplate = parseTemplate(indexMapping.sortKey);
-        const idxSkResult = buildKeyValue(idxSkTemplate, data);
-        if (!idxSkResult.success) return idxSkResult;
-        record[tableIndex.sortKey.name] = idxSkResult.data;
-      }
-    }
-  }
-
-  return ok(record);
-};
+): Result<Record<string, unknown>, Error> => buildStoredItem(entity, data);
 
 /**
  * Marshalls expression values for raw adapters.
@@ -196,10 +162,15 @@ export const executeTransactWrite = async (
           }
         }
 
-        const itemResult = buildItemWithKeys(
-          req.entity,
-          req.data as Record<string, unknown>,
-        );
+        let data = req.data as Record<string, unknown>;
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforePut) {
+          const hooked = await runHook("beforePut", () => hooks.beforePut!(data));
+          if (!hooked.success) return err(hooked.error);
+          data = hooked.data as Record<string, unknown>;
+        }
+
+        const itemResult = buildItemWithKeys(req.entity, data);
         if (!itemResult.success) {
           return err(createDynamoError("key", itemResult.error.message, itemResult.error));
         }
@@ -237,6 +208,12 @@ export const executeTransactWrite = async (
       }
 
       case "delete": {
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforeDelete) {
+          const hooked = await runHook("beforeDelete", () => hooks.beforeDelete!(req.keyInput));
+          if (!hooked.success) return err(hooked.error);
+        }
+
         const keyResult = buildKey(req.entity, req.keyInput);
         if (!keyResult.success) {
           return err(createDynamoError("key", keyResult.error.message, keyResult.error));
@@ -283,18 +260,39 @@ export const executeTransactWrite = async (
         // Build update expression
         const builder = createUpdateBuilder<unknown>();
         const configured = req.builderFn(builder as unknown as UpdateBuilder<StandardSchemaV1.InferOutput<StandardSchemaV1>>);
-        const actions = configured.build();
+        let actions = configured.build();
+        const hooks = req.entity.hooks;
+        if (!options?.skipHooks && hooks?.beforeUpdate) {
+          const current = actions;
+          const hooked = await runHook("beforeUpdate", () => hooks.beforeUpdate!(req.keyInput, current));
+          if (!hooked.success) return err(hooked.error);
+          actions = hooked.data;
+        }
         const compiled = compileUpdateActions(actions);
 
-        const mergedNames: Record<string, string> = {
-          ...compiled.expressionAttributeNames,
-          ...req.expressionNames,
-        };
+        const mergedNamesResult = mergeExpressionMaps(
+          "expressionNames",
+          compiled.expressionAttributeNames,
+          req.expressionNames,
+        );
+        if (!mergedNamesResult.success) {
+          return err(
+            createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error),
+          );
+        }
+        const mergedNames = mergedNamesResult.data;
 
-        let mergedValues: Record<string, unknown> = {
-          ...compiled.expressionAttributeValues,
-          ...req.expressionValues,
-        };
+        const mergedValuesResult = mergeExpressionMaps(
+          "expressionValues",
+          compiled.expressionAttributeValues,
+          req.expressionValues,
+        );
+        if (!mergedValuesResult.success) {
+          return err(
+            createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error),
+          );
+        }
+        let mergedValues: Record<string, unknown> = mergedValuesResult.data;
 
         let key = keyResult.data;
 

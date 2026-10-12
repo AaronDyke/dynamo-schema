@@ -161,3 +161,34 @@ export const buildExpressionAttributeNames = (
   }
   return Object.freeze(result);
 };
+
+/**
+ * Builds a ProjectionExpression with positional aliases (`#p0`, `#p1`, ...).
+ *
+ * Aliases are positional rather than derived from the attribute name, so any
+ * legal attribute name (including ones containing `-`, `.` or spaces) yields a
+ * valid expression. A name containing `.` is treated as a single top-level
+ * attribute, not a nested path.
+ *
+ * @param attributes - The attribute names to project
+ * @returns The projection expression and its ExpressionAttributeNames, or
+ *   `undefined` when `attributes` is undefined or empty
+ *
+ * @example
+ * buildProjection(["user-id", "name"])
+ * // { expression: "#p0, #p1", names: { "#p0": "user-id", "#p1": "name" } }
+ */
+export const buildProjection = (
+  attributes: readonly string[] | undefined,
+):
+  | { readonly expression: string; readonly names: Readonly<Record<string, string>> }
+  | undefined => {
+  if (!attributes || attributes.length === 0) return undefined;
+  const aliases = attributes.map((_, i) => `#p${i}`);
+  return Object.freeze({
+    expression: aliases.join(", "),
+    names: Object.freeze(
+      Object.fromEntries(aliases.map((alias, i) => [alias, attributes[i]!])),
+    ),
+  });
+};

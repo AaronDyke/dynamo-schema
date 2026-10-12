@@ -13,6 +13,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { buildProjection } from "../utils/expression-names.js";
 
 /**
  * Executes a Get operation for the given entity.
@@ -66,18 +67,7 @@ export const executeGet = async <
   }
 
   // 3. Build projection expression
-  let projectionExpression: string | undefined;
-  let expressionAttributeNames: Record<string, string> | undefined;
-  if (options?.projection && options.projection.length > 0) {
-    expressionAttributeNames = {};
-    const projParts: string[] = [];
-    for (const attr of options.projection) {
-      const alias = `#proj_${attr}`;
-      expressionAttributeNames[alias] = attr;
-      projParts.push(alias);
-    }
-    projectionExpression = projParts.join(", ");
-  }
+  const projection = buildProjection(options?.projection);
 
   // 4. Call adapter
   let result;
@@ -86,8 +76,8 @@ export const executeGet = async <
       tableName: entity.table.tableName,
       key: marshalledKey,
       consistentRead: options?.consistentRead,
-      projectionExpression,
-      expressionAttributeNames,
+      projectionExpression: projection?.expression,
+      expressionAttributeNames: projection?.names,
     });
   } catch (cause) {
     return err(

@@ -14,10 +14,12 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
-import { aliasAttributeName } from "../utils/expression-names.js";
+import { aliasAttributeName, buildProjection } from "../utils/expression-names.js";
 import { valuePlaceholder } from "../utils/expression-values.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
+import { runAfterGetOnList } from "../utils/run-hook.js";
 
 /** Key condition for the partition key. */
 export interface PartitionKeyCondition {
@@ -203,34 +205,31 @@ export const executeQuery = async <
   );
 
   // 4. Build projection expression
-  let projectionExpression: string | undefined;
-  const projNames: Record<string, string> = {};
-  if (options?.projection && options.projection.length > 0) {
-    const projParts: string[] = [];
-    for (const attr of options.projection) {
-      const alias = aliasAttributeName(`proj_${attr}`);
-      projNames[alias] = attr;
-      projParts.push(alias);
-    }
-    projectionExpression = projParts.join(", ");
-  }
+  const projection = buildProjection(options?.projection);
 
   // 5. Resolve filter expression (string, FilterNode, or callback)
   const resolvedFilter = resolveFilterInput(options?.filter);
 
   // 6. Merge all expression attribute names and values
-  const mergedNames: Record<string, string> = {
-    ...keyCondition.names,
-    ...projNames,
-    ...resolvedFilter.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...keyCondition.names, ...projection?.names, ...resolvedFilter.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
-  const mergedValues: Record<string, unknown> = {
-    ...keyCondition.values,
-    ...resolvedFilter.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    { ...keyCondition.values, ...resolvedFilter.expressionAttributeValues },
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  const mergedValues = mergedValuesResult.data;
 
   // 7. Marshall values if using raw adapter
   let marshalledValues: Record<string, unknown> = mergedValues;
@@ -276,7 +275,7 @@ export const executeQuery = async <
       exclusiveStartKey: startKey,
       scanIndexForward: options?.scanIndexForward,
       consistentRead: options?.consistentRead,
-      projectionExpression,
+      projectionExpression: projection?.expression,
     });
   } catch (cause) {
     return err(
@@ -308,10 +307,20 @@ export const executeQuery = async <
     }
   }
 
+  // Run afterGet on each item (unless skipped); items mapped to undefined are dropped
+  const hooks = entity.hooks;
+  const hooked = await runAfterGetOnList(
+    !options?.skipHooks && hooks?.afterGet
+      ? (item: StandardSchemaV1.InferOutput<S> | undefined) => hooks.afterGet!(item)
+      : undefined,
+    items,
+  );
+  if (!hooked.success) return err(hooked.error);
+
   return ok(
     Object.freeze({
-      items: Object.freeze(items),
-      count: result.count,
+      items: Object.freeze(hooked.data),
+      count: hooked.data.length,
       lastKey: result.lastEvaluatedKey,
     }),
   );
