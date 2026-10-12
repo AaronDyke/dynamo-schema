@@ -210,6 +210,8 @@ await sessions.get({ sessionId: "abc" }); // key input type: { sessionId: string
 
 A key definition without `{{…}}` is always a static value, even if it matches a field name: `partitionKey: "userId"` gives every item the key `"userId"`. To use a field's value as the whole key, write `"{{userId}}"`.
 
+A field value may not contain the text that follows it in the template. With `"{{orgId}}#{{userId}}"`, an `orgId` of `"a#b"` returns a `"key"` error, because `{ orgId: "a#b", userId: "c" }` and `{ orgId: "a", userId: "b#c" }` would otherwise build the same key and overwrite each other. The last field in a template has no such restriction. Pick delimiters that can't appear in your field values.
+
 ### TTL Configuration
 
 TTL is configured in two places: the **table** (which attribute DynamoDB uses for expiry) and the **entity** (how that attribute is managed automatically).

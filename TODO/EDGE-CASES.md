@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
 | [MAR-1](#mar-1-date-map-and-class-instances-marshal-to-an-empty-map) | `Date`, `Map` and class instances marshal to an empty map | **High** |
 | [PUT-1](#put-1-sparse-gsis-are-impossible) | Sparse GSIs are impossible: a missing index field fails the whole put | **High** |
 | [PUT-2](#put-2-key-index-and-ttl-attributes-silently-overwrite-schema-fields) | Key, index and TTL attributes silently overwrite schema fields | **High** |
@@ -80,13 +79,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 ---
 
 ## Key templates
-
-### KEY-1. Field values containing a template delimiter corrupt extraction
-**Severity:** High · **Where:** `extractFieldsFromKey` (`src/keys/key-extractor.ts`)
-
-**Behaviour:** Extraction looks for the **first** occurrence of the next literal (a non-greedy match). With template `{{orgId}}#{{userId}}`, the key `ORG#CHILD#u1` extracts as `{ orgId: "ORG", userId: "CHILD#u1" }`. There is no escaping mechanism, and building the key doesn't warn.
-
-**Fix:** In `buildKeyValue`, reject field values that contain an adjacent literal delimiter, returning a `"key"` error. Document that delimiters must not appear in values.
 
 ### KEY-2. Empty-string key or key field
 **Severity:** Medium · **Where:** `parseTemplate`, `buildKeyValue`
@@ -408,6 +400,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | KEY-6 | The README documented `"userId"` (no `{{}}`) as a field reference; `parseTemplate` treats it as a static literal, so every item would share one key. | README row removed and replaced with the `"{{userId}}"` form plus a warning that a bare name is always static. Code unchanged. |
 | EXP-2 | User `expressionNames`/`expressionValues` were spread over generated placeholders, so a matching key (for example `#u0`) silently redirected the expression to another attribute or value. | New `mergeExpressionMaps` helper, used by put, update, delete, query, scan and transactWrite updates: a conflicting key returns a `"validation"` error, and an identical duplicate is allowed. Covered by the EXP-2 tests. |
 | EXP-3 | Filter paths with dots (`"address.city"`) compiled to a single alias, so a filter meant for a nested attribute silently matched nothing, and there was no way to address nested attributes. | Filter paths now accept a tuple (`["address", "city"]`, `["tags", 0]`) that compiles to one alias per segment (`#f0_0.#f0_1`). A string path stays a single attribute name, consistent with updates and projections; the README documents both. Covered by the EXP-3 tests. |
+| KEY-1 | A field value containing the delimiter that follows it (`orgId: "a#b"` in `{{orgId}}#{{userId}}`) built an ambiguous key: two different items could share a key, and extraction split it wrongly. | `buildKeyValue` returns a `"key"` error when a field value contains the literal that follows it. Every key-building path uses it. Covered by the KEY-1 tests, including an exhaustive round-trip and uniqueness check over short strings. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

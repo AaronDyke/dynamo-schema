@@ -7,6 +7,10 @@
  */
 
 import { describe, it, expect, expectTypeOf, vi } from "vitest";
+import { z } from "zod";
+import { parseTemplate } from "../keys/template-parser.js";
+import { buildKeyValue } from "../keys/key-builder.js";
+import { extractFieldsFromKey } from "../keys/key-extractor.js";
 import { defineTable } from "../core/define-table.js";
 import { defineEntity } from "../core/define-entity.js";
 import { createClient } from "../core/create-client.js";
@@ -340,8 +344,66 @@ describe("EXP-3: filter paths containing dots", () => {
 });
 
 describe("KEY-1: field values containing a template delimiter", () => {
-  it.todo("buildKeyValue rejects a field value that contains the adjacent literal delimiter");
-  it.todo("buildKeyValue → extractFieldsFromKey round-trips every accepted value");
+  const template = parseTemplate("{{orgId}}#{{userId}}");
+
+  it("buildKeyValue rejects a field value that contains the adjacent literal delimiter", () => {
+    const result = buildKeyValue(template, { orgId: "ORG#CHILD", userId: "u1" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.message).toContain('contains the delimiter "#"');
+  });
+
+  it("allows the delimiter in the last field, which has no delimiter after it", () => {
+    expect(buildKeyValue(template, { orgId: "ORG", userId: "a#b" })).toEqual({
+      success: true,
+      data: "ORG#a#b",
+    });
+  });
+
+  it("buildKeyValue → extractFieldsFromKey round-trips every accepted value, and no two inputs share a key", () => {
+    // Every string of length 0-3 over a small alphabet that includes the delimiter.
+    const alphabet = ["a", "b", "#"];
+    const values = [""];
+    for (let len = 1; len <= 3; len++) {
+      for (const prefix of values.filter((v) => v.length === len - 1)) {
+        for (const ch of alphabet) values.push(prefix + ch);
+      }
+    }
+
+    const seen = new Map<string, string>();
+    for (const orgId of values) {
+      for (const userId of values) {
+        const built = buildKeyValue(template, { orgId, userId });
+        if (!built.success) continue;
+
+        expect(extractFieldsFromKey(template, built.data)).toEqual({
+          success: true,
+          data: { orgId, userId },
+        });
+        const input = JSON.stringify({ orgId, userId });
+        expect(seen.get(built.data) ?? input).toBe(input);
+        seen.set(built.data, input);
+      }
+    }
+    expect(seen.size).toBeGreaterThan(0);
+  });
+
+  it("put returns a key error instead of writing an ambiguous key", async () => {
+    const orgUsers = defineEntity({
+      name: "OrgUser",
+      schema: z.object({ orgId: z.string(), userId: z.string() }),
+      table: usersTable,
+      partitionKey: "{{orgId}}#{{userId}}",
+      sortKey: "PROFILE",
+    });
+    const adapter = createMockAdapter();
+
+    const result = await executePut(orgUsers, adapter, { orgId: "a#b", userId: "c" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.type).toBe("key");
+    expect(adapter.putItem).not.toHaveBeenCalled();
+  });
 });
 
 describe("MAR-1: non-plain objects marshalled as empty maps", () => {
