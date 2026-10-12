@@ -205,8 +205,10 @@ await sessions.get({ sessionId: "abc" }); // key input type: { sessionId: string
 |--------|---------|-------------|
 | Template | `"USER#{{userId}}"` | Substitutes `userId` field from entity data |
 | Multi-field template | `"{{orgId}}#{{date}}"` | Combines multiple fields |
+| Single field | `"{{userId}}"` | The key is exactly the `userId` field value |
 | Static value | `"PROFILE"` | Uses the literal string as-is |
-| Simple field | `"userId"` | Uses the field value directly (no `{{}}` needed when the entire key is one field) |
+
+A key definition without `{{…}}` is always a static value, even if it matches a field name: `partitionKey: "userId"` gives every item the key `"userId"`. To use a field's value as the whole key, write `"{{userId}}"`.
 
 ### TTL Configuration
 

@@ -208,10 +208,6 @@ describe("ENT-1: defineEntity without a sortKey", () => {
   });
 });
 
-describe("KEY-6: bare field name documented as a key template", () => {
-  it.todo("the README's 'Simple field' format matches what parseTemplate does with a bare name");
-});
-
 describe("EXP-2: user expressionNames/expressionValues overwriting generated aliases", () => {
   it.todo("returns a validation error when a user expressionNames key matches a generated alias");
   it.todo("returns a validation error when a user expressionValues key matches a generated placeholder");

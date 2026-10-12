@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [KEY-6](#key-6-readme-says-a-bare-field-name-is-a-key-template) | README says a bare field name (`"userId"`) is a key template; it's a static literal | **High** |
 | [EXP-2](#exp-2-user-supplied-expressionnames--expressionvalues-can-overwrite-generated-aliases) | User `expressionNames`/`expressionValues` can overwrite generated aliases | **High** |
 | [EXP-3](#exp-3-filter-paths-with-dots-target-a-literal-top-level-attribute) | Filter paths with dots silently target a literal top-level attribute | **High** |
 | [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
@@ -132,13 +131,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 **Behaviour:** Values pass through `String()`, so `false` becomes `"false"`, `0` becomes `"0"`, and an object becomes `"[object Object]"`.
 
 **Fix:** Accept only `string | number | bigint`, and return a `"key"` error for anything else.
-
-### KEY-6. README says a bare field name is a key template
-**Severity:** High · **Where:** README "Key definition formats" table, `parseTemplate`
-
-**Behaviour:** The README lists `"userId"` as a "Simple field" format that "uses the field value directly (no `{{}}` needed)". The code doesn't do that: `parseTemplate` treats any string without `{{…}}` as a static literal (`isSimple: true`). An entity defined with `partitionKey: "userId"` writes every item with the key `"userId"`, so each put overwrites the previous item.
-
-**Fix:** Either remove the README row (and point to `"{{userId}}"`), or make a bare name that matches a schema field act as a field reference. The second option is ambiguous with static values such as `"PROFILE"`, so removing the row is the safer choice.
 
 ---
 
@@ -429,6 +421,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | §7.2 | Unprocessed batch items discarded after one retry | `b436a0b`: exponential-backoff retry, and an error once retries are exhausted |
 | EXP-1 | Attribute names containing `-`, `.`, spaces and similar produced invalid placeholders in update, projection (query, scan, get, transactGet, batchGet) and remove-ttl expressions. Includes the alias half of BAT-5. | Positional placeholders (`#u0`/`:u0`, `#p0`, `#ttl`) and a shared `buildProjection` helper. Covered by the EXP-1 tests in `src/__tests__/edge-cases.test.ts`. |
 | ENT-1 | `defineEntity` without a `sortKey` didn't type-check: the sort-key check distributed over the default `SK = never`, collapsing `config` to `never`. The same bug in `EntityKeyFields` made the key input type `{}` for such entities, so `get({})` type-checked. | Both conditionals wrapped as `[SK] extends [never]`. Covered by the ENT-1 tests in `src/__tests__/edge-cases.test.ts` (type-level checks run under `npm run type-check`). |
+| KEY-6 | The README documented `"userId"` (no `{{}}`) as a field reference; `parseTemplate` treats it as a static literal, so every item would share one key. | README row removed and replaced with the `"{{userId}}"` form plus a warning that a bare name is always static. Code unchanged. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)
