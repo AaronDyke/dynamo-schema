@@ -13,6 +13,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { resolveFilterInput } from "./filter.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /**
  * Executes a Delete operation for the given entity.
@@ -75,10 +76,15 @@ export const executeDelete = async <
 
   // 3. Marshall key if using raw adapter
   let marshalledKey: Record<string, unknown> = key;
-  let exprValues: Record<string, unknown> = {
-    ...resolvedCondition.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    resolvedCondition.expressionAttributeValues,
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  let exprValues: Record<string, unknown> = mergedValuesResult.data;
 
   if (adapter.isRaw) {
     const m = marshallItem(key);
@@ -105,10 +111,15 @@ export const executeDelete = async <
   }
 
   // 4. Merge condition expression attribute names
-  const mergedNames: Record<string, string> = {
-    ...resolvedCondition.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    resolvedCondition.expressionAttributeNames,
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
   // 5. Call adapter
   try {

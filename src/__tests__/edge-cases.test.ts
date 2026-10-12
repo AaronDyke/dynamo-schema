@@ -18,6 +18,14 @@ import { executeTransactGet } from "../operations/transact-get.js";
 import { executeBatchGet } from "../operations/batch-get.js";
 import { executeRemoveTtl } from "../operations/remove-ttl.js";
 import { executePut } from "../operations/put.js";
+import { executeUpdate } from "../operations/update.js";
+import { executeDelete } from "../operations/delete.js";
+import {
+  executeTransactWrite,
+  type TransactWriteRequestItem,
+} from "../operations/transact-write.js";
+import { createFilterBuilder } from "../operations/filter.js";
+import type { UpdateBuilder } from "../types/update-expression.js";
 import type { EntityKeyInput } from "../types/entity.js";
 import {
   userEntity,
@@ -25,6 +33,7 @@ import {
   usersTable,
   validUser,
   createMockAdapter,
+  type User,
 } from "./fixtures.js";
 
 /** Attribute names that are legal in DynamoDB but not valid as raw placeholder text. */
@@ -209,8 +218,86 @@ describe("ENT-1: defineEntity without a sortKey", () => {
 });
 
 describe("EXP-2: user expressionNames/expressionValues overwriting generated aliases", () => {
-  it.todo("returns a validation error when a user expressionNames key matches a generated alias");
-  it.todo("returns a validation error when a user expressionValues key matches a generated placeholder");
+  const f = createFilterBuilder<{ status: string }>();
+
+  it("returns a validation error when a user expressionNames key matches a generated alias", async () => {
+    const adapter = createMockAdapter();
+    const results = [
+      await executeUpdate(userEntity, adapter, { userId: "u1" }, (b) => b.set("name", "A"), {
+        expressionNames: { "#u0": "email" },
+      }),
+      await executeQuery(userEntity, adapter, {
+        partitionKey: { userId: "u1" },
+        options: { projection: ["name"], expressionNames: { "#p0": "email" } },
+      }),
+      await executeScan(userEntity, adapter, {
+        filter: f.eq("status", "active"),
+        expressionNames: { "#f0": "email" },
+      }),
+      await executePut(userEntity, adapter, validUser, {
+        condition: f.eq("status", "active"),
+        expressionNames: { "#f0": "email" },
+      }),
+      await executeDelete(userEntity, adapter, { userId: "u1" }, {
+        condition: f.eq("status", "active"),
+        expressionNames: { "#f0": "email" },
+      }),
+      await executeTransactWrite(adapter, [
+        {
+          type: "update",
+          entity: userEntity,
+          keyInput: { userId: "u1" },
+          builderFn: (b: UpdateBuilder<User>) => b.set("name", "A"),
+          expressionNames: { "#u0": "email" },
+        } as TransactWriteRequestItem,
+      ]),
+    ];
+
+    for (const result of results) {
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.type).toBe("validation");
+        expect(result.error.message).toContain("conflicts with a generated placeholder");
+      }
+    }
+    expect(adapter.updateItem).not.toHaveBeenCalled();
+    expect(adapter.query).not.toHaveBeenCalled();
+    expect(adapter.scan).not.toHaveBeenCalled();
+    expect(adapter.putItem).not.toHaveBeenCalled();
+    expect(adapter.deleteItem).not.toHaveBeenCalled();
+    expect(adapter.transactWriteItems).not.toHaveBeenCalled();
+  });
+
+  it("returns a validation error when a user expressionValues key matches a generated placeholder", async () => {
+    const adapter = createMockAdapter();
+    const update = await executeUpdate(userEntity, adapter, { userId: "u1" }, (b) => b.set("name", "A"), {
+      expressionValues: { ":u0": "B" },
+    });
+    const query = await executeQuery(userEntity, adapter, {
+      partitionKey: { userId: "u1" },
+      options: { expressionValues: { ":pk": "USER#someone-else" } },
+    });
+
+    for (const result of [update, query]) {
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.type).toBe("validation");
+    }
+  });
+
+  it("allows a user key that repeats a generated placeholder with the same value", async () => {
+    const adapter = createMockAdapter();
+    // The README's query example passes { "#pk": "pk" }, which matches the generated key alias.
+    const result = await executeQuery(userEntity, adapter, {
+      partitionKey: { userId: "u1" },
+      options: { expressionNames: { "#pk": "pk", "#age": "age" } },
+    });
+
+    expect(result.success).toBe(true);
+    expect(vi.mocked(adapter.query).mock.calls[0]![0].expressionAttributeNames).toMatchObject({
+      "#pk": "pk",
+      "#age": "age",
+    });
+  });
 });
 
 describe("EXP-3: filter paths containing dots", () => {

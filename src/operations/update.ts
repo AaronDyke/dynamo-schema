@@ -19,6 +19,7 @@ import { marshallValue } from "../marshalling/marshall.js";
 import { unmarshallItem } from "../marshalling/unmarshall.js";
 import type { AttributeMap } from "../marshalling/types.js";
 import { resolveFilterInput } from "./filter.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /** Options for Update operations. */
 export interface UpdateOptions {
@@ -305,17 +306,25 @@ export const executeUpdate = async <
   const resolvedCondition = resolveFilterInput(options?.condition);
 
   // 4. Merge expression names/values from update expression, condition, and user overrides
-  const mergedNames: Record<string, string> = {
-    ...compiled.expressionAttributeNames,
-    ...resolvedCondition.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...compiled.expressionAttributeNames, ...resolvedCondition.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
-  const mergedValues: Record<string, unknown> = {
-    ...compiled.expressionAttributeValues,
-    ...resolvedCondition.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    { ...compiled.expressionAttributeValues, ...resolvedCondition.expressionAttributeValues },
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  const mergedValues = mergedValuesResult.data;
 
   // 4. Marshall if using raw adapter
   let marshalledKey: Record<string, unknown> = key;

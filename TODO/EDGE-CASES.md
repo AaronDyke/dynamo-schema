@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [EXP-2](#exp-2-user-supplied-expressionnames--expressionvalues-can-overwrite-generated-aliases) | User `expressionNames`/`expressionValues` can overwrite generated aliases | **High** |
 | [EXP-3](#exp-3-filter-paths-with-dots-target-a-literal-top-level-attribute) | Filter paths with dots silently target a literal top-level attribute | **High** |
 | [KEY-1](#key-1-field-values-containing-a-template-delimiter-corrupt-extraction) | Field values containing a delimiter corrupt key extraction | **High** |
 | [MAR-1](#mar-1-date-map-and-class-instances-marshal-to-an-empty-map) | `Date`, `Map` and class instances marshal to an empty map | **High** |
@@ -71,13 +70,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 ---
 
 ## Expressions & aliasing
-
-### EXP-2. User-supplied `expressionNames` / `expressionValues` can overwrite generated aliases
-**Severity:** High · **Where:** query, scan, put, update, delete, transact-write (`{ ...generated, ...options.expressionNames }`)
-
-**Behaviour:** User maps are spread last, so a user key that matches a generated alias wins. For example, a user `#f0` overrides the filter builder's `#f0`, and a user `#u0` overrides the update builder's first alias. The expression still compiles, but it reads or writes the **wrong attribute** with no error.
-
-**Fix:** Detect overlapping keys while merging and return a `"validation"` error. Alternatively, give generated aliases a reserved prefix (such as `#__ds_`) that user aliases may not use. Until then, the README warns users not to use the `#u`/`#p`/`#f` + number forms.
 
 ### EXP-3. Filter paths with dots target a literal top-level attribute
 **Severity:** High · **Where:** `src/operations/filter.ts`
@@ -422,6 +414,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | EXP-1 | Attribute names containing `-`, `.`, spaces and similar produced invalid placeholders in update, projection (query, scan, get, transactGet, batchGet) and remove-ttl expressions. Includes the alias half of BAT-5. | Positional placeholders (`#u0`/`:u0`, `#p0`, `#ttl`) and a shared `buildProjection` helper. Covered by the EXP-1 tests in `src/__tests__/edge-cases.test.ts`. |
 | ENT-1 | `defineEntity` without a `sortKey` didn't type-check: the sort-key check distributed over the default `SK = never`, collapsing `config` to `never`. The same bug in `EntityKeyFields` made the key input type `{}` for such entities, so `get({})` type-checked. | Both conditionals wrapped as `[SK] extends [never]`. Covered by the ENT-1 tests in `src/__tests__/edge-cases.test.ts` (type-level checks run under `npm run type-check`). |
 | KEY-6 | The README documented `"userId"` (no `{{}}`) as a field reference; `parseTemplate` treats it as a static literal, so every item would share one key. | README row removed and replaced with the `"{{userId}}"` form plus a warning that a bare name is always static. Code unchanged. |
+| EXP-2 | User `expressionNames`/`expressionValues` were spread over generated placeholders, so a matching key (for example `#u0`) silently redirected the expression to another attribute or value. | New `mergeExpressionMaps` helper, used by put, update, delete, query, scan and transactWrite updates: a conflicting key returns a `"validation"` error, and an identical duplicate is allowed. Covered by the EXP-2 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

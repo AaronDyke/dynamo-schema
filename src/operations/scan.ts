@@ -14,6 +14,7 @@ import { unmarshallItem } from "../marshalling/unmarshall.js";
 import { buildProjection } from "../utils/expression-names.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /**
  * Executes a Scan operation for the given entity.
@@ -37,17 +38,26 @@ export const executeScan = async <
   const resolvedFilter = resolveFilterInput(options?.filter);
 
   // 3. Merge expression attribute names
-  const mergedNames: Record<string, string> = {
-    ...projection?.names,
-    ...resolvedFilter.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...projection?.names, ...resolvedFilter.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
   // 4. Marshall expression values if using raw adapter
-  let exprValues: Record<string, unknown> = {
-    ...resolvedFilter.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    resolvedFilter.expressionAttributeValues,
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  let exprValues: Record<string, unknown> = mergedValuesResult.data;
   let startKey = options?.startKey;
 
   if (adapter.isRaw) {

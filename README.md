@@ -416,7 +416,7 @@ await users.query({
 // ProjectionExpression: "#p0, #p1"
 ```
 
-A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Avoid starting your own `expressionNames` / `expressionValues` keys with `#u`, `#p`, `#f`, `:u` or `:f` followed by a number, because generated placeholders use those forms.
+A name containing `.` is treated as a single top-level attribute (`"address.city"` is an attribute literally named `address.city`), not as a path into a nested map. Generated placeholders use the forms `#pk`, `#sk`, `#u<n>`, `#p<n>`, `#f<n>`, `#ttl`, `:pk`, `:sk`, `:skLo`, `:skHi`, `:u<n>` and `:f<n>`. If one of your own `expressionNames` / `expressionValues` keys matches a generated placeholder but maps to something different, the operation returns a `"validation"` error instead of silently pointing the expression at the wrong attribute. Repeating a generated placeholder with the same value (for example `{ "#pk": "pk" }`) is allowed.
 
 **Update with condition:**
 

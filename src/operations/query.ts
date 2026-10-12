@@ -18,6 +18,7 @@ import { aliasAttributeName, buildProjection } from "../utils/expression-names.j
 import { valuePlaceholder } from "../utils/expression-values.js";
 import { resolveFilterInput } from "./filter.js";
 import type { AttributeMap } from "../marshalling/types.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /** Key condition for the partition key. */
 export interface PartitionKeyCondition {
@@ -209,18 +210,25 @@ export const executeQuery = async <
   const resolvedFilter = resolveFilterInput(options?.filter);
 
   // 6. Merge all expression attribute names and values
-  const mergedNames: Record<string, string> = {
-    ...keyCondition.names,
-    ...projection?.names,
-    ...resolvedFilter.expressionAttributeNames,
-    ...options?.expressionNames,
-  };
+  const mergedNamesResult = mergeExpressionMaps(
+    "expressionNames",
+    { ...keyCondition.names, ...projection?.names, ...resolvedFilter.expressionAttributeNames },
+    options?.expressionNames,
+  );
+  if (!mergedNamesResult.success) {
+    return err(createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error));
+  }
+  const mergedNames = mergedNamesResult.data;
 
-  const mergedValues: Record<string, unknown> = {
-    ...keyCondition.values,
-    ...resolvedFilter.expressionAttributeValues,
-    ...options?.expressionValues,
-  };
+  const mergedValuesResult = mergeExpressionMaps(
+    "expressionValues",
+    { ...keyCondition.values, ...resolvedFilter.expressionAttributeValues },
+    options?.expressionValues,
+  );
+  if (!mergedValuesResult.success) {
+    return err(createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error));
+  }
+  const mergedValues = mergedValuesResult.data;
 
   // 7. Marshall values if using raw adapter
   let marshalledValues: Record<string, unknown> = mergedValues;

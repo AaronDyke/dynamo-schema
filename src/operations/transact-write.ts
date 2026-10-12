@@ -17,6 +17,7 @@ import { buildKeyValue } from "../keys/key-builder.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { marshallValue } from "../marshalling/marshall.js";
 import { createUpdateBuilder, compileUpdateActions } from "./update.js";
+import { mergeExpressionMaps } from "../utils/merge-expression-maps.js";
 
 /** A transactional put request. */
 export interface TransactPutRequest<S extends StandardSchemaV1 = StandardSchemaV1> {
@@ -286,15 +287,29 @@ export const executeTransactWrite = async (
         const actions = configured.build();
         const compiled = compileUpdateActions(actions);
 
-        const mergedNames: Record<string, string> = {
-          ...compiled.expressionAttributeNames,
-          ...req.expressionNames,
-        };
+        const mergedNamesResult = mergeExpressionMaps(
+          "expressionNames",
+          compiled.expressionAttributeNames,
+          req.expressionNames,
+        );
+        if (!mergedNamesResult.success) {
+          return err(
+            createDynamoError("validation", mergedNamesResult.error.message, mergedNamesResult.error),
+          );
+        }
+        const mergedNames = mergedNamesResult.data;
 
-        let mergedValues: Record<string, unknown> = {
-          ...compiled.expressionAttributeValues,
-          ...req.expressionValues,
-        };
+        const mergedValuesResult = mergeExpressionMaps(
+          "expressionValues",
+          compiled.expressionAttributeValues,
+          req.expressionValues,
+        );
+        if (!mergedValuesResult.success) {
+          return err(
+            createDynamoError("validation", mergedValuesResult.error.message, mergedValuesResult.error),
+          );
+        }
+        let mergedValues: Record<string, unknown> = mergedValuesResult.data;
 
         let key = keyResult.data;
 
