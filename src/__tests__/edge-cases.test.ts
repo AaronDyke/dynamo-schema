@@ -747,8 +747,78 @@ describe("BAT-1: multiple entities on one table in BatchGet", () => {
 });
 
 describe("BAT-2: BatchWrite partial failure", () => {
-  it.todo("the error identifies the items that were not written when a later chunk fails");
-  it.todo("the error identifies the items still unprocessed after retries run out");
+  // 30 puts: chunk 1 holds requests 0-24, chunk 2 holds 25-29.
+  const requests = Array.from(
+    { length: 30 },
+    (_, i): BatchWriteRequestItem => ({
+      type: "put",
+      entity: userEntity,
+      data: { ...validUser, userId: `u${i}` },
+    }),
+  );
+  const userIdsOf = (items: readonly BatchWriteRequestItem[]): string[] =>
+    items.map((r) => (r as { data: { userId: string } }).data.userId);
+  const noDelay = { retryOptions: { maxAttempts: 2, baseDelayMs: 0, maxDelayMs: 0 } };
+
+  it("the error identifies the items that were not written when a later chunk fails", async () => {
+    const adapter = createMockAdapter();
+    vi.mocked(adapter.batchWriteItem)
+      .mockResolvedValueOnce({ unprocessedItems: [] })
+      .mockRejectedValueOnce(new Error("throttled"));
+
+    const result = await executeBatchWrite(adapter, requests);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.message).toBe("throttled");
+      expect(userIdsOf(result.error.unprocessed)).toEqual(["u25", "u26", "u27", "u28", "u29"]);
+    }
+  });
+
+  it("the error identifies the items still unprocessed after retries run out", async () => {
+    // DynamoDB keeps returning u3 and u7 from chunk 1 as unprocessed.
+    const stuck = (adapter: ReturnType<typeof createMockAdapter>) =>
+      vi.mocked(adapter.batchWriteItem).mockImplementation(async (batch) => ({
+        unprocessedItems: batch.map((b) => ({
+          tableName: b.tableName,
+          requests: b.requests.filter((r) => {
+            const pk = r.type === "put" ? r.item["pk"] : undefined;
+            const value = typeof pk === "object" && pk !== null ? (pk as { S: string }).S : pk;
+            return value === "USER#u3" || value === "USER#u7";
+          }),
+        })).filter((b) => b.requests.length > 0),
+      }));
+
+    for (const adapter of [createMockAdapter(), createRawMockAdapter()]) {
+      stuck(adapter);
+      const result = await executeBatchWrite(adapter, requests, noDelay);
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        // The stuck items, plus all of chunk 2, which was never sent.
+        expect(userIdsOf(result.error.unprocessed)).toEqual([
+          "u3", "u7", "u25", "u26", "u27", "u28", "u29",
+        ]);
+      }
+    }
+  });
+
+  it("lists every request when the batch fails before anything is sent", async () => {
+    const adapter = createMockAdapter();
+    const invalid = [
+      ...requests.slice(0, 2),
+      { type: "put", entity: userEntity, data: { userId: "bad" } } as BatchWriteRequestItem,
+    ];
+
+    const result = await executeBatchWrite(adapter, invalid);
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.type).toBe("validation");
+      expect(result.error.unprocessed).toEqual(invalid);
+    }
+    expect(adapter.batchWriteItem).not.toHaveBeenCalled();
+  });
 });
 
 describe("BAT-3: entity name collisions in BatchGetResult", () => {

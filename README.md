@@ -751,7 +751,16 @@ await client.batchWrite(requests, {
 });
 ```
 
-If items remain unprocessed after all attempts, the operation returns a `DynamoError` (rather than silently discarding them).
+Requests are sent in the order you pass them. Chunks sent before a failure stay written, so a failed batch can be partly applied. The error (a `BatchWriteError`) lists exactly which requests were not confirmed written in `error.unprocessed`, in your original order. This covers retries running out, an AWS error, and validation or key errors before anything was sent (then it's every request):
+
+```typescript
+const result = await client.batchWrite(requests);
+if (!result.success) {
+  console.error(result.error.message);
+  // Retry only what wasn't written
+  const retry = await client.batchWrite(result.error.unprocessed);
+}
+```
 
 ### Batch Get
 

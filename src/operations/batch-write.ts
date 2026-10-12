@@ -102,36 +102,108 @@ const chunk = <T>(items: readonly T[], size: number): readonly (readonly T[])[] 
 };
 
 /**
- * Executes a BatchWrite operation with auto-chunking.
+ * The error returned by {@link executeBatchWrite}: a `DynamoError` plus the
+ * requests that were not confirmed written.
+ */
+export interface BatchWriteError extends DynamoError {
+  /**
+   * Every request that was not confirmed written, in the order they were
+   * passed in. Requests not listed here were written. Retrying exactly these
+   * completes the batch.
+   *
+   * When the failure happens before anything is sent (validation, key
+   * building, marshalling), this is every request.
+   */
+  readonly unprocessed: readonly BatchWriteRequestItem[];
+}
+
+/** A request in adapter form, with its position in the caller's list. */
+interface FlatRequest {
+  readonly index: number;
+  readonly tableName: string;
+  readonly identity: string;
+  readonly request:
+    | { readonly type: "put"; readonly item: Record<string, unknown> }
+    | { readonly type: "delete"; readonly key: Record<string, unknown> };
+}
+
+/** Identifies a write by table and key attribute values (in adapter form). */
+const writeIdentity = (
+  tableName: string,
+  keyNames: { readonly pk: string; readonly sk: string | undefined },
+  attributes: Readonly<Record<string, unknown>>,
+): string =>
+  JSON.stringify([
+    tableName,
+    attributes[keyNames.pk],
+    keyNames.sk ? attributes[keyNames.sk] : null,
+  ]);
+
+/**
+ * Executes a BatchWrite operation with auto-chunking and exponential backoff
+ * retry.
+ *
+ * - Requests are sent in the order given, in chunks of 25 (the DynamoDB limit).
+ * - When DynamoDB returns `UnprocessedItems`, they are retried with
+ *   exponential backoff (default: up to 3 retries at 100ms, 200ms, 400ms).
+ * - On any failure, the error's `unprocessed` lists every request that was not
+ *   confirmed written. Chunks sent before the failure stay written.
  *
  * @param adapter - The SDK adapter
  * @param requests - Array of put/delete requests across entities
  * @param options - Optional batch write options
- * @returns A Result indicating success or a DynamoError
+ * @returns A Result indicating success, or a {@link BatchWriteError}
+ *
+ * @example
+ * ```ts
+ * const result = await executeBatchWrite(adapter, requests);
+ * if (!result.success) {
+ *   // Retry only what wasn't written
+ *   await executeBatchWrite(adapter, result.error.unprocessed);
+ * }
+ * ```
  */
 export const executeBatchWrite = async (
   adapter: SDKAdapter,
   requests: readonly BatchWriteRequestItem[],
   options?: BatchWriteOptions,
-): Promise<Result<void, DynamoError>> => {
-  // 1. Process each request into adapter format, grouped by table
-  const tableRequests = new Map<
-    string,
-    Array<{ type: "put"; item: Record<string, unknown> } | { type: "delete"; key: Record<string, unknown> }>
-  >();
+): Promise<Result<void, BatchWriteError>> => {
+  const fail = (
+    error: DynamoError,
+    unprocessedIndexes: Iterable<number>,
+  ): Result<void, BatchWriteError> => {
+    const indexes = [...new Set(unprocessedIndexes)].sort((a, b) => a - b);
+    return err(
+      Object.freeze({
+        ...error,
+        unprocessed: Object.freeze(indexes.map((i) => requests[i]!)),
+      }),
+    );
+  };
+  const allIndexes = requests.map((_, i) => i);
 
-  for (const req of requests) {
+  // 1. Validate, build and marshall every request before sending anything
+  const flatRequests: FlatRequest[] = [];
+
+  for (const [index, req] of requests.entries()) {
+    const table = req.entity.table;
+    const keyNames = {
+      pk: table.partitionKey.name,
+      sk: req.entity.sortKey ? table.sortKey?.name : undefined,
+    };
+
     if (req.type === "put") {
       // Validate if not skipped
       if (!options?.skipValidation) {
         const validationResult = await validate(req.entity.schema, req.data);
         if (!validationResult.success) {
-          return err(
+          return fail(
             createDynamoError(
               "validation",
               validationResult.error.message,
               validationResult.error,
             ),
+            allIndexes,
           );
         }
       }
@@ -141,75 +213,95 @@ export const executeBatchWrite = async (
         req.data as Record<string, unknown>,
       );
       if (!itemResult.success) {
-        return err(createDynamoError("key", itemResult.error.message, itemResult.error));
+        return fail(
+          createDynamoError("key", itemResult.error.message, itemResult.error),
+          allIndexes,
+        );
       }
 
       let item = itemResult.data;
       if (adapter.isRaw) {
         const marshalled = marshallItem(item);
         if (!marshalled.success) {
-          return err(
+          return fail(
             createDynamoError("marshalling", marshalled.error.message, marshalled.error),
+            allIndexes,
           );
         }
         item = marshalled.data;
       }
 
-      const tableName = req.entity.table.tableName;
-      if (!tableRequests.has(tableName)) {
-        tableRequests.set(tableName, []);
-      }
-      tableRequests.get(tableName)!.push({ type: "put", item });
+      flatRequests.push({
+        index,
+        tableName: table.tableName,
+        identity: writeIdentity(table.tableName, keyNames, item),
+        request: { type: "put", item },
+      });
     } else {
       const keyResult = buildKey(req.entity, req.keyInput);
       if (!keyResult.success) {
-        return err(createDynamoError("key", keyResult.error.message, keyResult.error));
+        return fail(
+          createDynamoError("key", keyResult.error.message, keyResult.error),
+          allIndexes,
+        );
       }
 
       let key = keyResult.data;
       if (adapter.isRaw) {
         const marshalled = marshallItem(key);
         if (!marshalled.success) {
-          return err(
+          return fail(
             createDynamoError("marshalling", marshalled.error.message, marshalled.error),
+            allIndexes,
           );
         }
         key = marshalled.data;
       }
 
-      const tableName = req.entity.table.tableName;
-      if (!tableRequests.has(tableName)) {
-        tableRequests.set(tableName, []);
-      }
-      tableRequests.get(tableName)!.push({ type: "delete", key });
+      flatRequests.push({
+        index,
+        tableName: table.tableName,
+        identity: writeIdentity(table.tableName, keyNames, key),
+        request: { type: "delete", key },
+      });
     }
   }
 
-  // 2. Build BatchWriteRequest objects
-  const allBatchRequests: BatchWriteRequest[] = [];
-  for (const [tableName, reqs] of tableRequests) {
-    allBatchRequests.push({ tableName, requests: reqs });
-  }
-
-  // 3. Flatten all requests and chunk into groups of 25
-  type FlatRequest = { tableName: string; request: { type: "put"; item: Record<string, unknown> } | { type: "delete"; key: Record<string, unknown> } };
-  const flatRequests: FlatRequest[] = [];
-  for (const batchReq of allBatchRequests) {
-    for (const req of batchReq.requests) {
-      flatRequests.push({ tableName: batchReq.tableName, request: req });
-    }
-  }
+  // Key attribute names per table, to match DynamoDB's UnprocessedItems back to requests
+  const keyNamesByTable = new Map(
+    requests.map((req) => [
+      req.entity.table.tableName,
+      {
+        pk: req.entity.table.partitionKey.name,
+        sk: req.entity.sortKey ? req.entity.table.sortKey?.name : undefined,
+      },
+    ]),
+  );
 
   const chunks = chunk(flatRequests, BATCH_WRITE_LIMIT);
   const maxAttempts = options?.retryOptions?.maxAttempts ?? 4;
 
-  // 4. Execute each chunk
-  for (const chunkItems of chunks) {
+  // 2. Execute each chunk
+  for (const [chunkIndex, chunkItems] of chunks.entries()) {
+    const laterIndexes = chunks.slice(chunkIndex + 1).flat().map((r) => r.index);
+
+    /** Maps DynamoDB's unprocessed items back to indexes in this chunk. */
+    const indexesOf = (pending: ReadonlyArray<BatchWriteRequest>): number[] =>
+      pending.flatMap((batchReq) => {
+        const keyNames = keyNamesByTable.get(batchReq.tableName);
+        return batchReq.requests.flatMap((r) => {
+          if (!keyNames) return [];
+          const identity = writeIdentity(
+            batchReq.tableName,
+            keyNames,
+            r.type === "put" ? r.item : r.key,
+          );
+          return chunkItems.filter((f) => f.identity === identity).map((f) => f.index);
+        });
+      });
+
     // Group chunk items by table
-    const chunkByTable = new Map<
-      string,
-      Array<{ type: "put"; item: Record<string, unknown> } | { type: "delete"; key: Record<string, unknown> }>
-    >();
+    const chunkByTable = new Map<string, Array<FlatRequest["request"]>>();
     for (const item of chunkItems) {
       if (!chunkByTable.has(item.tableName)) {
         chunkByTable.set(item.tableName, []);
@@ -222,21 +314,22 @@ export const executeBatchWrite = async (
       batchReqs.push({ tableName, requests: reqs });
     }
 
-    // 5. Initial call
+    // 3. Initial call. If it throws, nothing in this chunk is confirmed written.
     let result;
     try {
       result = await adapter.batchWriteItem(batchReqs);
     } catch (cause) {
-      return err(
+      return fail(
         createDynamoError(
           "dynamo",
           cause instanceof Error ? cause.message : "BatchWrite operation failed",
           cause,
         ),
+        [...chunkItems.map((r) => r.index), ...laterIndexes],
       );
     }
 
-    // 6. Retry unprocessed items with exponential backoff
+    // 4. Retry unprocessed items with exponential backoff
     let unprocessed: ReadonlyArray<BatchWriteRequest> = result.unprocessedItems;
 
     for (let retryIndex = 0; retryIndex < maxAttempts - 1 && unprocessed.length > 0; retryIndex++) {
@@ -247,25 +340,28 @@ export const executeBatchWrite = async (
         const retryResult = await adapter.batchWriteItem(unprocessed);
         unprocessed = retryResult.unprocessedItems;
       } catch (cause) {
-        return err(
+        return fail(
           createDynamoError(
             "dynamo",
             cause instanceof Error ? cause.message : "BatchWrite retry failed",
             cause,
           ),
+          [...indexesOf(unprocessed), ...laterIndexes],
         );
       }
     }
 
-    // 7. Fail if items remain unprocessed after all attempts
+    // 5. Fail if items remain unprocessed after all attempts
     if (unprocessed.length > 0) {
       const totalUnprocessed = unprocessed.reduce((n, req) => n + req.requests.length, 0);
-      return err(
+      return fail(
         createDynamoError(
           "dynamo",
           `BatchWrite: ${totalUnprocessed} item(s) remained unprocessed after ${maxAttempts} attempt(s). ` +
-            `Consider increasing retryOptions.maxAttempts or checking for persistent throttling.`,
+            `Consider increasing retryOptions.maxAttempts or checking for persistent throttling. ` +
+            `error.unprocessed lists every request that was not written.`,
         ),
+        [...indexesOf(unprocessed), ...laterIndexes],
       );
     }
   }

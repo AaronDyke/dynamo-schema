@@ -49,7 +49,7 @@ export type { UpdateOptions } from "./operations/update.js";
 export type { EntityQueryInput, SortKeyCondition, PartitionKeyCondition } from "./operations/query.js";
 
 // Batch operation types
-export type { BatchPutRequest, BatchDeleteRequest, BatchWriteRequestItem, BatchWriteOptions } from "./operations/batch-write.js";
+export type { BatchPutRequest, BatchDeleteRequest, BatchWriteRequestItem, BatchWriteOptions, BatchWriteError } from "./operations/batch-write.js";
 export type { BatchGetEntityRequest, BatchGetResult, BatchGetOptions } from "./operations/batch-get.js";
 
 // Retry utilities

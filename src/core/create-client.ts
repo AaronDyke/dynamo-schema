@@ -27,7 +27,12 @@ import { executeQuery, type EntityQueryInput, type SortKeyCondition } from "../o
 import { executeScan } from "../operations/scan.js";
 import { executeUpdate, type UpdateOptions } from "../operations/update.js";
 import { executeRemoveTtl } from "../operations/remove-ttl.js";
-import { executeBatchWrite, type BatchWriteRequestItem, type BatchWriteOptions } from "../operations/batch-write.js";
+import {
+  executeBatchWrite,
+  type BatchWriteRequestItem,
+  type BatchWriteOptions,
+  type BatchWriteError,
+} from "../operations/batch-write.js";
 import { executeBatchGet, type BatchGetEntityRequest, type BatchGetResult, type BatchGetOptions } from "../operations/batch-get.js";
 import { executeTransactWrite, type TransactWriteRequestItem, type TransactWriteOptions } from "../operations/transact-write.js";
 import { executeTransactGet, type TransactGetEntityRequest, type TransactGetResult } from "../operations/transact-get.js";
@@ -104,7 +109,7 @@ export interface DynamoClient {
   readonly batchWrite: (
     requests: readonly BatchWriteRequestItem[],
     options?: BatchWriteOptions,
-  ) => Promise<Result<void, DynamoError>>;
+  ) => Promise<Result<void, BatchWriteError>>;
 
   /** Batch get items across multiple entities. */
   readonly batchGet: (
