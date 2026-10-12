@@ -18,6 +18,7 @@ import { createDynamoError } from "../types/operations.js";
 import { validate } from "../validation/validate.js";
 import { parseTemplate } from "../keys/template-parser.js";
 import { buildKeyValue } from "../keys/key-builder.js";
+import { buildItemKeyAttributes } from "../keys/item-keys.js";
 import { marshallItem } from "../marshalling/marshall.js";
 import { type RetryOptions, computeBackoffDelay, sleep } from "../utils/retry.js";
 
@@ -63,49 +64,9 @@ const buildItemWithKeys = (
   entity: EntityDefinition,
   data: Record<string, unknown>,
 ): Result<Record<string, unknown>, Error> => {
-  const record = { ...data };
-
-  const pkTemplate = parseTemplate(entity.partitionKey);
-  const pkResult = buildKeyValue(pkTemplate, record);
-  if (!pkResult.success) return pkResult;
-  record[entity.table.partitionKey.name] = pkResult.data;
-
-  if (entity.sortKey && entity.table.sortKey) {
-    const skTemplate = parseTemplate(entity.sortKey);
-    const skResult = buildKeyValue(skTemplate, record);
-    if (!skResult.success) return skResult;
-    record[entity.table.sortKey.name] = skResult.data;
-  }
-
-  // Build index keys
-  if (entity.indexes) {
-    const indexes = entity.indexes as Record<
-      string,
-      { partitionKey: string; sortKey?: string }
-    >;
-    const tableIndexes = entity.table.indexes as Record<
-      string,
-      { partitionKey: { name: string }; sortKey?: { name: string } }
-    >;
-    for (const [indexKey, indexMapping] of Object.entries(indexes)) {
-      const tableIndex = tableIndexes[indexKey];
-      if (!tableIndex) continue;
-
-      const idxPkTemplate = parseTemplate(indexMapping.partitionKey);
-      const idxPkResult = buildKeyValue(idxPkTemplate, data);
-      if (!idxPkResult.success) return idxPkResult;
-      record[tableIndex.partitionKey.name] = idxPkResult.data;
-
-      if (indexMapping.sortKey && tableIndex.sortKey) {
-        const idxSkTemplate = parseTemplate(indexMapping.sortKey);
-        const idxSkResult = buildKeyValue(idxSkTemplate, data);
-        if (!idxSkResult.success) return idxSkResult;
-        record[tableIndex.sortKey.name] = idxSkResult.data;
-      }
-    }
-  }
-
-  return ok(record);
+  const keyResult = buildItemKeyAttributes(entity, data);
+  if (!keyResult.success) return keyResult;
+  return ok({ ...data, ...keyResult.data });
 };
 
 /**

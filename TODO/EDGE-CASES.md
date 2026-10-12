@@ -22,7 +22,6 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 
 | ID | Issue | Severity |
 |----|-------|----------|
-| [PUT-1](#put-1-sparse-gsis-are-impossible) | Sparse GSIs are impossible: a missing index field fails the whole put | **High** |
 | [PUT-2](#put-2-key-index-and-ttl-attributes-silently-overwrite-schema-fields) | Key, index and TTL attributes silently overwrite schema fields | **High** |
 | [BAT-1](#bat-1-multiple-entities-on-one-table-are-merged-in-batchget) | BatchGet merges results and settings for entities sharing a table | **High** |
 | [BAT-2](#bat-2-batchwrite-partial-failure-reports-no-progress) | BatchWrite returns an error after earlier chunks were already written | **High** |
@@ -53,6 +52,7 @@ Entry IDs are stable. Never renumber them; retire an ID by moving its entry to [
 | [KEY-4](#key-4-duplicate-field-in-one-template) | A duplicate field in one template is not checked on extraction | Low |
 | [KEY-5](#key-5-non-string-field-values-are-stringified) | Non-string key field values are stringified (`false` → `"false"`) | Low |
 | [TTL-1](#ttl-1-autoupdatettlseconds-without-a-table-ttl) | `autoUpdateTtlSeconds` without a table TTL silently does nothing | Medium |
+| [TTL-4](#ttl-4-batchwrite-and-transactwrite-skip-the-default-ttl) | `batchWrite` and `transactWrite` don't inject the default TTL | Medium |
 | [TTL-2](#ttl-2-ttl-overflow-is-reported-as-a-marshalling-error) | TTL overflow is reported as a marshalling error | Low |
 | [TTL-3](#ttl-3-very-short-ttl-windows) | Very short TTL windows are not checked | Low |
 | [VAL-1](#val-1-a-throwing-schema-escapes-the-result-boundary) | A throwing or rejecting schema escapes the `Result` boundary | Medium |
@@ -158,13 +158,6 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 ---
 
 ## Put
-
-### PUT-1. Sparse GSIs are impossible
-**Severity:** High · **Where:** `executePut` index key loop (`src/operations/put.ts`)
-
-**Behaviour:** For every index the entity declares, `buildKeyValue` runs, and a missing field returns a `"key"` error that aborts the put. An item that should *not* appear in a GSI (the standard sparse-index pattern) cannot be written.
-
-**Fix:** When an index template's fields are absent, skip that index's attributes, and keep failing on partially present fields. Optionally, add a per-index `sparse: true` flag to make this explicit.
 
 ### PUT-2. Key, index and TTL attributes silently overwrite schema fields
 **Severity:** High · **Where:** `executePut`
@@ -340,6 +333,13 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 
 **Fix:** Return an error from `defineEntity` (or table validation) when an entity sets TTL options and its table has no TTL.
 
+### TTL-4. batchWrite and transactWrite skip the default TTL
+**Severity:** Medium · **Where:** `buildItemWithKeys` in `batch-write.ts` and `transact-write.ts`
+
+**Behaviour:** `put` sets the TTL attribute from `defaultTtlSeconds`, but put requests in `batchWrite` and `transactWrite` don't. The same item written through a batch never expires.
+
+**Fix:** Move the default-TTL step into a shared item builder (next to `buildItemKeyAttributes` in `src/keys/item-keys.ts`) and use it in all three write paths.
+
 ### TTL-2. TTL overflow is reported as a marshalling error
 **Severity:** Low
 
@@ -394,6 +394,7 @@ Open High-severity entries have pending `it.todo` tests in `src/__tests__/edge-c
 | EXP-3 | Filter paths with dots (`"address.city"`) compiled to a single alias, so a filter meant for a nested attribute silently matched nothing, and there was no way to address nested attributes. | Filter paths now accept a tuple (`["address", "city"]`, `["tags", 0]`) that compiles to one alias per segment (`#f0_0.#f0_1`). A string path stays a single attribute name, consistent with updates and projections; the README documents both. Covered by the EXP-3 tests. |
 | KEY-1 | A field value containing the delimiter that follows it (`orgId: "a#b"` in `{{orgId}}#{{userId}}`) built an ambiguous key: two different items could share a key, and extraction split it wrongly. | `buildKeyValue` returns a `"key"` error when a field value contains the literal that follows it. Every key-building path uses it. Covered by the KEY-1 tests, including an exhaustive round-trip and uniqueness check over short strings. |
 | MAR-1 | `Date`, `Map`, `ArrayBuffer` and class instances fell through to `marshallMap` and were stored as `{ M: {} }`, silently losing their data (raw adapters). | `marshallValue` only marshals plain objects (prototype `Object.prototype` or `null`) as maps; any other object returns a `"marshalling"` error with a conversion hint. DocumentClient adapters still use the AWS SDK's own rules. Covered by the MAR-1 tests. |
+| PUT-1 | Every index an entity mapped was required on every write, so an item missing an index field failed the whole put and sparse GSIs were impossible. | New shared `buildItemKeyAttributes` (`src/keys/item-keys.ts`) replaces three copies of the key-building code in put, batchWrite and transactWrite. An index whose template fields are all absent is skipped; partly present fields still return a `"key"` error. Covered by the PUT-1 tests. |
 | §6.6 (partly) | Raw filter strings aren't aliased | `8af1103`: use the filter builder (`FilterNode` or a callback), which aliases automatically. Raw strings are still passed through as they are, by design. |
 
 ## Expected behaviour (document in the README; not defects)

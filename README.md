@@ -178,6 +178,17 @@ const userEntity = defineEntity({
 });
 ```
 
+**Sparse indexes:**
+
+An item is written to an index only when it has the fields that index's key templates use. If **all** of them are absent (`undefined` or `null`), the index key attributes are left off and the item doesn't appear in the index. If only some are present, the write returns a `"key"` error. This applies to `put`, `batchWrite` and `transactWrite`.
+
+```typescript
+// indexes: { gsi1: { partitionKey: "EMAIL#{{email}}", sortKey: "TEAM#{{team}}" } }
+await users.put({ userId: "1" });                              // not in gsi1
+await users.put({ userId: "2", email: "a@b.c", team: "red" }); // in gsi1
+await users.put({ userId: "3", email: "a@b.c" });              // "key" error: team is missing
+```
+
 **Entities without a sort key:**
 
 On a table with only a partition key, omit `sortKey`. Key inputs then require only the partition key fields:

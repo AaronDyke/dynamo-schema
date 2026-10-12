@@ -26,6 +26,10 @@ import { executePut } from "../operations/put.js";
 import { executeUpdate } from "../operations/update.js";
 import { executeDelete } from "../operations/delete.js";
 import {
+  executeBatchWrite,
+  type BatchWriteRequestItem,
+} from "../operations/batch-write.js";
+import {
   executeTransactWrite,
   type TransactWriteRequestItem,
 } from "../operations/transact-write.js";
@@ -462,8 +466,92 @@ describe("MAR-1: non-plain objects marshalled as empty maps", () => {
 });
 
 describe("PUT-1: sparse GSIs", () => {
-  it.todo("put succeeds and omits the index attributes when all of an index template's fields are absent");
-  it.todo("put still fails when only some of an index template's fields are present");
+  const sparseTable = defineTable({
+    tableName: "SparseTable",
+    partitionKey: { name: "pk", definition: "pk" },
+    sortKey: { name: "sk", definition: "sk" },
+    indexes: {
+      gsi1: {
+        type: "GSI" as const,
+        indexName: "GSI1",
+        partitionKey: { name: "gsi1pk", definition: "gsi1pk" },
+        sortKey: { name: "gsi1sk", definition: "gsi1sk" },
+      },
+    },
+  });
+  // gsi1 is only populated for users who have both an email and a team.
+  const entity = defineEntity({
+    name: "SparseUser",
+    schema: z.object({
+      userId: z.string(),
+      email: z.string().optional(),
+      team: z.string().optional(),
+    }),
+    table: sparseTable,
+    partitionKey: "USER#{{userId}}",
+    sortKey: "PROFILE",
+    indexes: { gsi1: { partitionKey: "EMAIL#{{email}}", sortKey: "TEAM#{{team}}" } },
+  });
+
+  it("put succeeds and omits the index attributes when all of an index template's fields are absent", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(entity, adapter, { userId: "u1" });
+
+    expect(result.success).toBe(true);
+    const item = vi.mocked(adapter.putItem).mock.calls[0]![0].item;
+    expect(item).toEqual({ userId: "u1", pk: "USER#u1", sk: "PROFILE" });
+  });
+
+  it("put writes the index attributes when the fields are present", async () => {
+    const adapter = createMockAdapter();
+
+    await executePut(entity, adapter, { userId: "u1", email: "a@b.c", team: "red" });
+
+    expect(vi.mocked(adapter.putItem).mock.calls[0]![0].item).toMatchObject({
+      gsi1pk: "EMAIL#a@b.c",
+      gsi1sk: "TEAM#red",
+    });
+  });
+
+  it("put still fails when only some of an index template's fields are present", async () => {
+    const adapter = createMockAdapter();
+
+    const result = await executePut(entity, adapter, { userId: "u1", email: "a@b.c" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.type).toBe("key");
+      expect(result.error.message).toContain('Index "gsi1"');
+      expect(result.error.message).toContain('"team"');
+    }
+    expect(adapter.putItem).not.toHaveBeenCalled();
+  });
+
+  it("batchWrite and transactWrite apply the same sparse rule", async () => {
+    const adapter = createMockAdapter();
+
+    const batch = await executeBatchWrite(adapter, [
+      { type: "put", entity, data: { userId: "u1" } } as BatchWriteRequestItem,
+    ]);
+    const transact = await executeTransactWrite(adapter, [
+      { type: "put", entity, data: { userId: "u2" } } as TransactWriteRequestItem,
+    ]);
+
+    expect(batch.success).toBe(true);
+    expect(transact.success).toBe(true);
+    const batchItem = vi.mocked(adapter.batchWriteItem).mock.calls[0]![0][0]!.requests[0]!;
+    const transactItem = vi.mocked(adapter.transactWriteItems).mock.calls[0]![0][0]!;
+    expect(batchItem).toMatchObject({ type: "put", item: { pk: "USER#u1" } });
+    expect(transactItem).toMatchObject({ type: "put", item: { pk: "USER#u2" } });
+    for (const item of [
+      (batchItem as { item: Record<string, unknown> }).item,
+      (transactItem as { item: Record<string, unknown> }).item,
+    ]) {
+      expect(item).not.toHaveProperty("gsi1pk");
+      expect(item).not.toHaveProperty("gsi1sk");
+    }
+  });
 });
 
 describe("PUT-2: generated attributes overwriting schema fields", () => {
